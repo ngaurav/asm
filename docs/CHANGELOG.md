@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.6.2] - 2026-05-07
+
+### Changed
+
+- Index 2 new curated skill sources — `warpdotdev/oz-skills` (15 skills for Warp AI agents) and `entireio/skills` (5 cross-agent skills for context and session handoff); regenerated catalog totals 7036 skills across 31 repos (#264)
+- Dedupe same-name skills within a single repo by directory priority — when one repo ships a skill at multiple supported install paths, keep exactly one entry using a deterministic order (`skills/` > `.claude/skills/` > `.agent/skills/` and `.agents/skills/` > first occurrence); cross-repo duplicates remain independent and dropped paths are logged via `--verbose` (#265, #266)
+
 ## [2.6.1] - 2026-05-03
 
 ### Fixed

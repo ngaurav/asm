@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.6.2 — 2026-05-07
+
+### Chores
+
+- Index 2 new curated skill sources — `warpdotdev/oz-skills` (15 skills for Warp AI agents) and `entireio/skills` (5 cross-agent skills for context and session handoff); regenerated catalog totals 7036 skills across 31 repos ([#264](https://github.com/luongnv89/asm/issues/264)) — @luongnv89
+- Dedupe same-name skills within a single repo by directory priority — when one repo ships a skill at multiple supported install paths, keep exactly one entry using a deterministic order (`skills/` > `.claude/skills/` > `.agent/skills/` and `.agents/skills/` > first occurrence); cross-repo duplicates remain independent and dropped paths are logged via `--verbose` ([#265](https://github.com/luongnv89/asm/issues/265), [#266](https://github.com/luongnv89/asm/issues/266)) — @luongnv89
+
+**Full Changelog**: https://github.com/luongnv89/asm/compare/v2.6.1...v2.6.2
+
 ## v2.6.1 — 2026-05-03
 
 ### Bug Fixes
