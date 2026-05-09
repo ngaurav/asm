@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.7.0 — 2026-05-10
+
+### Features
+
+- Add Quick Start section to the catalog skill detail page — guided three-step workflow (Security Check, Quality Evaluation, Install) with copy-to-clipboard buttons ([#273](https://github.com/luongnv89/asm/issues/273)) — @luongnv89
+- Add `romainsimon/paperasse` to the curated skill index — 6 French bureaucracy skills (commissaire-aux-comptes, comptable, controleur-fiscal, fiscaliste, notaire, syndic) covering administrative procedures and document handling ([#267](https://github.com/luongnv89/asm/issues/267), [#271](https://github.com/luongnv89/asm/issues/271)) — @luongnv89
+- Re-sync `coreyhaines31/marketingskills` — 1 new co-marketing skill added ([#268](https://github.com/luongnv89/asm/issues/268)) — @luongnv89
+
+### Bug Fixes
+
+- `fix(test):` Update skill-detail tests for UI changes
+- `fix(test-spawn):` Kill children on parent disconnect
+
+### Documentation
+
+- `docs(security):` Skill audit for issue #269 — security scan of 284 installed skills against prompt injection and credential theft risks, zero strict-risk hits found ([#270](https://github.com/luongnv89/asm/issues/270)) — @luongnv89
+
+### Chores
+
+- Re-sync all 30 curated skill sources — net skill count updated across the catalog
+- Clean up repository and expand `.gitignore` — removed tracked backup files, added dev tool directories (`.cursor`, `.aider`, `.continue`, `.windsurf`, `.zed`, `.fleet`) and build/cache log patterns
+
+**Full Changelog**: https://github.com/luongnv89/asm/compare/v2.6.2...v2.7.0
+
 ## v2.6.2 — 2026-05-07
 
 ### Chores
