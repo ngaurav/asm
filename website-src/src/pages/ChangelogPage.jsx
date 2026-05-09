@@ -27,6 +27,82 @@ function issue(n) {
 
 const ENTRIES = [
   {
+    version: "2.7.0",
+    date: "2026-05-10",
+    sections: [
+      {
+        tag: "added",
+        items: [
+          <>
+            Quick Start section on the catalog skill detail page — guided
+            three-step workflow (Security Check, Quality Evaluation, Install)
+            with copy-to-clipboard buttons ({pr(273)})
+          </>,
+          <>
+            <code>romainsimon/paperasse</code> added to the curated skill index
+            — 6 French bureaucracy skills (commissaire-aux-comptes, comptable,
+            controleur-fiscal, fiscaliste, notaire, syndic) ({pr(271)})
+          </>,
+          <>
+            Re-synced <code>coreyhaines31/marketingskills</code> — 1 new
+            co-marketing skill added ({pr(268)})
+          </>,
+        ],
+      },
+      {
+        tag: "fixed",
+        items: [
+          <>
+            <code>fix(test):</code> Update skill-detail tests for UI changes
+          </>,
+          <>
+            <code>fix(test-spawn):</code> Kill children on parent disconnect
+          </>,
+        ],
+      },
+      {
+        tag: "docs",
+        items: [
+          <>
+            Skill audit for issue #269 — security scan of 284 installed skills
+            against prompt injection and credential theft risks, zero
+            strict-risk hits found ({pr(270)})
+          </>,
+        ],
+      },
+      {
+        tag: "changed",
+        items: [
+          "Re-synced all 30 curated skill sources — catalog updated across the board",
+          "Clean up repository and expand .gitignore — removed backup files, added dev tool directories",
+        ],
+      },
+    ],
+  },
+  {
+    version: "2.6.2",
+    date: "2026-05-07",
+    sections: [
+      {
+        tag: "changed",
+        items: [
+          <>
+            Re-index 2 new curated skill sources —{" "}
+            <code>warpdotdev/oz-skills</code> (15 skills) and{" "}
+            <code>entireio/skills</code> (5 cross-agent skills); catalog now
+            reaches 7,036 skills across 31 repos ({pr(264)})
+          </>,
+          <>
+            Same-name skill dedup within a single repo by directory priority —
+            keeps exactly one entry when one repo ships a skill at multiple
+            install paths; cross-repo duplicates remain independent ({pr(265)},{" "}
+            {pr(266)})
+          </>,
+        ],
+      },
+    ],
+  },
+  {
     version: "2.6.1",
     date: "2026-05-03",
     sections: [
