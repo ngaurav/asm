@@ -177,6 +177,31 @@ export interface RemovalPlan {
   agentsBlocks: Array<{ file: string; skillName: string }>;
 }
 
+export interface RemovalOptions {
+  providerFilter?: string;
+  scopeFilter?: Scope;
+}
+
+export interface RelocationInfo {
+  needed: boolean;
+  fromProvider: string;
+  fromPath: string;
+  toProvider: string;
+  toPath: string;
+  /**
+   * Other surviving instances (not at toPath) whose symlinks must be
+   * repointed to toPath after the real folder is renamed there. May be
+   * empty when only one other provider remains.
+   */
+  repointPaths?: string[];
+  /**
+   * When true, skip the rename step (the target already holds a real
+   * folder) and only repoint surviving symlinks. The removed provider's
+   * real folder is deleted via the standard removal path.
+   */
+  repointOnly?: boolean;
+}
+
 // ─── Audit Types ──────────────────────────────────────────────────────────
 
 export interface DuplicateGroup {
