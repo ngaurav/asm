@@ -15,11 +15,11 @@ export default function DocsPage() {
           <code>npm install -g agent-skill-manager</code>
         </pre>
         <p>
-          Requires <a href="https://bun.sh">Bun</a> ≥ 1.0.0 as the runtime.
-          Install Bun:
+          Requires <a href="https://nodejs.org">Node.js</a> ≥ 18 and npm ≥ 9.
+          Verify your versions:
         </p>
         <pre>
-          <code>curl -fsSL https://bun.sh/install | bash</code>
+          <code>node --version && npm --version</code>
         </pre>
         <h3>One-liner install</h3>
         <pre>
@@ -66,6 +66,14 @@ export default function DocsPage() {
             <Row
               cmd="asm uninstall <skill-name>"
               desc="Remove a skill (with confirmation)"
+            />
+            <Row
+              cmd="asm disable <target>"
+              desc="Disable skills without uninstalling (renames SKILL.md → SKILL.md.disabled)"
+            />
+            <Row
+              cmd="asm enable <target>"
+              desc="Re-enable previously disabled skills"
             />
             <Row
               cmd="asm init <name>"
@@ -451,7 +459,7 @@ allowed-tools: Bash Read Grep Glob WebFetch
 effort: medium
 metadata:
   version: 1.0.0
-  creator: "Your Name"
+  author: "Your Name"
 ---`}</CodeBlock>
 
         <h3>Frontmatter Fields</h3>
@@ -492,9 +500,14 @@ metadata:
               desc="Semver version (defaults to 0.0.0)"
             />
             <FieldRow
-              name="metadata.creator"
+              name="metadata.author"
               req="no"
-              desc="Author name and optional email"
+              desc={
+                <>
+                  Author name and optional email (canonical;{" "}
+                  <code>creator</code> accepted as a legacy alias)
+                </>
+              }
             />
           </tbody>
         </table>
@@ -503,7 +516,7 @@ metadata:
       <section className="doc-section">
         <h2>Supported Agent Tools</h2>
         <p>
-          <code>asm</code> ships with 18 built-in providers, all enabled by
+          <code>asm</code> ships with 19 built-in providers, all enabled by
           default:
         </p>
         <table>
@@ -555,6 +568,7 @@ metadata:
               g="~/.config/opencode/skills/"
               p=".opencode/skills/"
             />
+            <ToolRow tool="Pi" g="~/.pi/skills/" p=".pi/skills/" />
             <ToolRow
               tool="Zed"
               g="~/.config/zed/prompt_overrides/"
@@ -982,6 +996,81 @@ asm audit security --all                      # Audit all installed skills`}</Co
         <CodeBlock>{`asm uninstall code-review             # Remove with confirmation
 asm uninstall code-review -y          # Remove without confirmation
 asm uninstall code-review -s project  # Remove project copy only`}</CodeBlock>
+      </section>
+
+      <section className="doc-section">
+        <h2>
+          Disabling Skills (<code>asm disable</code>, <code>asm enable</code>)
+        </h2>
+        <p>
+          Curate the active skill set without uninstalling, so your agent stops
+          invoking unintended or conflicting skills (e.g. two competing
+          code-review skills, or the word &quot;workflow&quot; triggering a
+          workflow skill). Disabling renames a skill&apos;s{" "}
+          <code>SKILL.md</code> to <code>SKILL.md.disabled</code> so neither{" "}
+          <code>asm</code> nor your agent discovers it; the directory stays
+          intact and <code>asm enable</code> reverses it. Disabled instances
+          still appear in <code>asm list</code>, rendered dimmed with a{" "}
+          <code>[disabled]</code> tag.
+        </p>
+        <p>
+          Skills installed to several tools at once share one{" "}
+          <code>SKILL.md</code> (siblings are symlinks), so disabling one
+          affects all of them — <code>asm</code> warns and records every
+          sibling. Separately-installed copies stay independent.
+        </p>
+
+        <h3>Targets</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Target</th>
+              <th>Matches</th>
+            </tr>
+          </thead>
+          <tbody>
+            <Row cmd="<name>" desc="Exact skill name or directory name" />
+            <Row
+              cmd="'<glob>*'"
+              desc="Glob match (* matches any characters)"
+            />
+            <Row
+              cmd="<prefix>: or <prefix>-"
+              desc="Prefix match (e.g. openspec:, asc-)"
+            />
+            <Row cmd="--all" desc="Every matching skill" />
+          </tbody>
+        </table>
+
+        <h3>Flags</h3>
+        <FlagTable
+          rows={[
+            ["--all, -a", "Disable / enable every matching skill"],
+            [
+              "-p, --tool <name>",
+              "Limit to one tool/provider (e.g. claude, codex)",
+            ],
+            [
+              "-s, --scope <s>",
+              <>
+                Filter: <code>global</code>, <code>local</code>,{" "}
+                <code>project</code>, or <code>both</code> (default: both)
+              </>,
+            ],
+            ["-y, --yes", "Skip confirmation prompt"],
+            ["--json", "Output result as JSON"],
+            ["--machine", "Tab-separated output"],
+          ]}
+        />
+        <CodeBlock>{`asm disable code-review              # Disable one skill
+asm disable 'workflow*'              # Glob match
+asm disable '*-review'               # Glob suffix
+asm disable openspec:                # Prefix match (colon)
+asm disable asc-                     # Prefix match (hyphen)
+asm disable --all                    # Disable everything
+asm disable code-review -p claude    # Only the Claude Code instance
+asm enable code-review               # Re-enable a skill
+asm enable --all                     # Re-enable everything`}</CodeBlock>
       </section>
 
       <section className="doc-section">
