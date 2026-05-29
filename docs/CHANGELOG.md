@@ -4,6 +4,59 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.9.0] - 2026-05-29
+
+### Added
+
+- `asm disable <target>` / `asm enable <target>` — curate the active skill set without uninstalling, so agents stop accidentally invoking unintended or conflicting skills (e.g. two code-review skills, or the word "workflow" in conversation triggering a workflow skill). Disabling renames an instance's `SKILL.md` → `SKILL.md.disabled` so both asm's scanner and external agents stop discovering it; enabling reverses the rename. Targeting supports individual names, wildcards (`'workflow*'`, `'*-review'`), prefixes (`openspec:`, `asc-`), bulk (`--all`), and `--tool` / `--scope` filters. State persists in `~/.config/agent-skill-manager/skill-state.json` keyed by (skill × tool × scope). `asm list` reconstructs disabled instances and renders them dimmed with a `[disabled]` tag; JSON output carries a `disabled` flag. Symlinked multi-provider installs share one `SKILL.md`, so a toggle honestly affects every tool sharing that source and warns accordingly (#91)
+
+### Changed
+
+- Bump landing-page skill count to 3,400+ in the page, og, and twitter meta descriptions (catalog now holds 3,493 skills)
+- Remove residual Bun references across the project — `install.sh` rewritten from Bun to npm (checks Node >= 18 / npm >= 9 and instructs on failure rather than auto-installing a runtime); `docs/DEPLOYMENT.md`, `docs/DEVELOPMENT.md`, `CONTRIBUTING.md`, `prd.md`, and the bug-report template corrected to Node/npm; skill/agent docs point `bun run preindex` → `npm run preindex`; vestigial Bun-absence test guards removed and argv fixtures switched from `bun` to `node`. The `Bun.spawn`/`Bun.env` patterns in `src/security-auditor.ts` and `src/installer.ts` are intentionally kept as detection vocabulary for auditing third-party skills. Also corrected stale `@opentui/core` references left by the ink migration and restored dropped eval/publish and `bun:ffi` build-leak test coverage (#293)
+
+## [2.8.0] - 2026-05-20
+
+### Added
+
+- `asm uninstall <name>` — new command with full reverse-installation logic. Supports `-s <scope>` and `-t, --tool <provider>` filters, automatically relocates the real folder to another surviving provider when the canonical host is being removed, cleans up empty parent dirs, and shows scope/tool/relocation info in the confirmation prompt (#279)
+- New `refresh-index` skill — re-ingests every already-enabled repo in `data/skill-index-resources.json` in one guided workflow (sync, classify into updated/unchanged/failed/skipped, verify catalog, then a confirmation-gated commit + PR). Inverse of `skill-index-updater` (#290)
+- Reorder install tool list by user preference — `DEFAULT_PROVIDERS` now leads with claude, codex, opencode, pi, hermes, openclaw; added the `pi` provider; `mergeWithDefaults` now inserts newly-introduced default providers in their canonical priority slot (anchored to the nearest preceding default), so existing users see the new order on upgrade (#291)
+- Repo-derived bundles — repo indexing now emits zero/one/multiple bundle records per repository, with explicit bundle metadata merged with best-effort inference. Bundles are exposed via CLI bundle load/list and the website bundle catalog; provenance to source repo and skill paths is preserved. 196 inferred bundles refreshed across 28 repos (#275)
+
+### Fixed
+
+- `asm uninstall <name> -t <provider>` now preserves the `.skill-lock.json` entry (source-tracking metadata: `source`, `commitHash`, `ref`) when other providers still have the skill installed, so subsequent `asm list`/`asm update` keep working on the survivors. When a real-folder relocation moves the canonical home to a kept provider the lock entry's `provider` field is repointed; when no relocation happened the entry is left intact. The full-uninstall path (no `-t`) still drops the entry as before (#284)
+- Uninstaller now cleans up partial state on EXDEV cp fallback failure — when cross-device move fails mid-copy, the partial destination is removed instead of being left as half-written content (#283)
+- Uninstaller surfaces relocation failures via non-zero exit code — relocation errors are no longer swallowed, so CI and scripted callers see the failure (#282)
+- Bundle modify/export tests no longer leak installed skill copies into the user's real `~/.claude/skills/` — each test creates its source dir so the installer's destination basename matches the cleanup lookup, plus a per-test guard fails the test if the install survives (#288)
+- Replace apt-based trivy install with a binary download to avoid Azure mirror timeouts in the security workflow
+
+### Changed
+
+- Document `asm bundle` command and the predefined bundles in the README (#202)
+- Supply-chain hardening across npm and GitHub Actions — pinned versions, ignore-scripts hardening, lockfile checks, dependency cooldown declaration (#277)
+- Refresh indexed skill sources across all 30 curated repos — net skill count updated across the catalog (#295)
+
+## [2.7.0] - 2026-05-10
+
+### Added
+
+- Add Quick Start section to the catalog skill detail page — guided three-step workflow (Security Check, Quality Evaluation, Install) with copy-to-clipboard buttons (#273)
+- Add `romainsimon/paperasse` to the curated skill index — 6 French bureaucracy skills (commissaire-aux-comptes, comptable, controleur-fiscal, fiscaliste, notaire, syndic) covering administrative procedures and document handling (#267, #271)
+- Re-sync `coreyhaines31/marketingskills` — 1 new co-marketing skill added (#268)
+
+### Fixed
+
+- Update skill-detail tests for UI changes
+- Kill children on parent disconnect (test-spawn)
+
+### Changed
+
+- Skill audit for issue #269 — security scan of 284 installed skills against prompt injection and credential theft risks, zero strict-risk hits found (#270)
+- Re-sync all 30 curated skill sources — net skill count updated across the catalog
+- Clean up repository and expand `.gitignore` — removed tracked backup files, added dev tool directories (`.cursor`, `.aider`, `.continue`, `.windsurf`, `.zed`, `.fleet`) and build/cache log patterns
+
 ## [2.6.2] - 2026-05-07
 
 ### Changed
