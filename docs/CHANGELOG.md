@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.11.0] - 2026-06-09
+
+### Added
+
+- Support root-level SKILL.md files in skill index entries (SKILL.md at index repo root, not only under `.agents/skills/`)
+- Add `cybersecurity-skills` source to the curated skill index
+- Add `badlogic/pi-skills` source to the curated skill index
+
+### Changed
+
+- Refresh indexed skill sources — re-ingested all enabled repos in `data/skill-index-resources.json`
+
 ## [2.10.0] - 2026-06-03
 
 ### Added

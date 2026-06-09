@@ -27,6 +27,35 @@ function issue(n) {
 
 const ENTRIES = [
   {
+    version: "2.11.0",
+    date: "2026-06-09",
+    sections: [
+      {
+        tag: "added",
+        items: [
+          <>Support root-level SKILL.md files in skill index entries</>,
+          <>
+            Add <code>cybersecurity-skills</code> source to the curated skill
+            index
+          </>,
+          <>
+            Add <code>badlogic/pi-skills</code> source to the curated skill
+            index
+          </>,
+        ],
+      },
+      {
+        tag: "changed",
+        items: [
+          <>
+            Refresh indexed skill sources — re-ingested all enabled repos in
+            <code>data/skill-index-resources.json</code>
+          </>,
+        ],
+      },
+    ],
+  },
+  {
     version: "2.10.0",
     date: "2026-06-03",
     sections: [

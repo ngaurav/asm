@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.11.0 — 2026-06-09
+
+### Features
+
+- Support root skill index entries — skill index now accepts entries at the root level of indexed repositories, allowing a single repo to contribute skills without nested directories ([#304](https://github.com/luongnv89/asm/issues/304)) — @luongnv89
+- Add briiirussell cybersecurity-skills source to the curated skill index — 1 new skill source for cybersecurity-focused agent skills ([#303](https://github.com/luongnv89/asm/issues/303)) — @luongnv89
+- Add badlogic/pi-skills source to the curated skill index — 1 new skill source from the pi-skills repository ([#302](https://github.com/luongnv89/asm/issues/302)) — @luongnv89
+
+### Chores
+
+- Refresh indexed skill sources — re-ingested all enabled repos in `data/skill-index-resources.json` ([#306](https://github.com/luongnv89/asm/issues/306)) — @luongnv89
+
+**Full Changelog**: https://github.com/luongnv89/asm/compare/v2.10.0...v2.11.0
+
 ## v2.10.0 — 2026-06-03
 
 ### Features
