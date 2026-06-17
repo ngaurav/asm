@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.12.0 — 2026-06-17
+
+### Features
+
+- Inject live catalog counts into SEO surfaces at build time — skill, repo, and category counts were hardcoded and drifted stale across the SEO files (`index.html` meta, `llms.txt`, `og-image.svg`). They are now derived from `catalog.json` at build time via `website-src/` templates carrying `{{SKILL_COUNT}}`/`{{REPO_COUNT}}`/`{{CATEGORY_COUNT}}`/`{{LASTMOD}}` placeholders, a Vite `transformIndexHtml` plugin injects the counts into `index.html`, the sitemap `lastmod` is stamped from the build date, and `WebApplication` JSON-LD was added. The build fails loud on any unresolved placeholder, and the build-generated SEO files are no longer tracked (gitignored) ([#309](https://github.com/luongnv89/asm/issues/309)) — @luongnv89
+- Fetch the live GitHub star count in the catalog header — the header previously showed the build-time star count, which could drift between releases. It now fetches the live count from the GitHub API on mount and falls back to the static catalog value on error or rate-limit; the fetch is non-blocking with `AbortController` cleanup ([#308](https://github.com/luongnv89/asm/issues/308)) — @luongnv89
+
+### Bug Fixes
+
+- Index both root-level and nested skills — the skill index now correctly picks up skills declared at the repo root as well as those nested under supported install paths. Also fixes `asm install --all` duplicate detection to key on the install-dir basename (via `getInstallNameFromPath`) instead of the frontmatter `name`, which previously both missed real collisions and raised false collisions that blocked valid installs; the root `relPath` case is special-cased ([#305](https://github.com/luongnv89/asm/issues/305)) — @luongnv89
+
+### Chores
+
+- Bump the transitive `ws` dependency 8.20.0 → 8.21.0 — clears the high-severity GHSA-58qx-3vcg-4xpx / CVE-2026-45736 advisory via `npm audit fix` ([#305](https://github.com/luongnv89/asm/issues/305)) — @luongnv89
+- Refresh indexed skill sources — re-ingested all enabled repos in `data/skill-index-resources.json` (34 updated, 0 unchanged, 0 failed, 1 skipped) ([#312](https://github.com/luongnv89/asm/issues/312)) — @luongnv89
+
+**Full Changelog**: https://github.com/luongnv89/asm/compare/v2.11.0...v2.12.0
+
 ## v2.11.0 — 2026-06-09
 
 ### Features

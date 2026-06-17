@@ -27,6 +27,68 @@ function issue(n) {
 
 const ENTRIES = [
   {
+    version: "2.12.0",
+    date: "2026-06-17",
+    sections: [
+      {
+        tag: "added",
+        items: [
+          <>
+            Inject live catalog counts into SEO surfaces at build time — skill,
+            repo, and category counts were hardcoded and drifted stale across
+            the SEO files (<code>index.html</code> meta, <code>llms.txt</code>,{" "}
+            <code>og-image.svg</code>). They are now derived from{" "}
+            <code>catalog.json</code> at build time via{" "}
+            <code>website-src/</code> templates carrying{" "}
+            <code>{"{{SKILL_COUNT}}"}</code>/<code>{"{{REPO_COUNT}}"}</code>{" "}
+            placeholders, a Vite <code>transformIndexHtml</code> plugin injects
+            the counts into <code>index.html</code>, the sitemap{" "}
+            <code>lastmod</code> is stamped from the build date, and{" "}
+            <code>WebApplication</code> JSON-LD was added. The build fails loud
+            on any unresolved placeholder ({issue(309)})
+          </>,
+          <>
+            Fetch the live GitHub star count in the catalog header — the header
+            previously showed the build-time star count, which could drift
+            between releases. It now fetches the live count from the GitHub API
+            on mount and falls back to the static catalog value on error or
+            rate-limit; the fetch is non-blocking with{" "}
+            <code>AbortController</code> cleanup ({issue(308)})
+          </>,
+        ],
+      },
+      {
+        tag: "fixed",
+        items: [
+          <>
+            Index both root-level and nested skills — the skill index now
+            correctly picks up skills declared at the repo root as well as those
+            nested under supported install paths. Also fixes{" "}
+            <code>asm install --all</code> duplicate detection to key on the
+            install-dir basename instead of the frontmatter <code>name</code>,
+            which previously both missed real collisions and raised false
+            collisions that blocked valid installs ({issue(305)})
+          </>,
+        ],
+      },
+      {
+        tag: "changed",
+        items: [
+          <>
+            Bump the transitive <code>ws</code> dependency 8.20.0 → 8.21.0 to
+            clear the high-severity GHSA-58qx-3vcg-4xpx / CVE-2026-45736
+            advisory ({issue(305)})
+          </>,
+          <>
+            Refresh indexed skill sources — re-ingested all enabled repos in{" "}
+            <code>data/skill-index-resources.json</code> (34 updated, 0
+            unchanged, 0 failed, 1 skipped) ({issue(312)})
+          </>,
+        ],
+      },
+    ],
+  },
+  {
     version: "2.11.0",
     date: "2026-06-09",
     sections: [

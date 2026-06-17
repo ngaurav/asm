@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.12.0] - 2026-06-17
+
+### Added
+
+- Inject live catalog counts into SEO surfaces at build time — skill/repo/category counts derived from `catalog.json` via `website-src/` templates and a Vite `transformIndexHtml` plugin, sitemap `lastmod` stamped from the build date, `WebApplication` JSON-LD added, and the build fails loud on unresolved placeholders (#309)
+- Fetch the live GitHub star count in the catalog header on mount, falling back to the static catalog value on error/rate-limit (non-blocking, with `AbortController` cleanup) (#308)
+
+### Changed
+
+- Refresh indexed skill sources — re-ingested all enabled repos in `data/skill-index-resources.json` (34 updated, 0 unchanged, 0 failed, 1 skipped) (#312)
+
+### Fixed
+
+- Index both root-level and nested skills, and key `asm install --all` duplicate detection on the install-dir basename instead of the frontmatter name — fixing both missed real collisions and false collisions that blocked valid installs (#305)
+- Bump transitive `ws` 8.20.0 → 8.21.0 to clear the high-severity GHSA-58qx-3vcg-4xpx / CVE-2026-45736 advisory (#305)
+
 ## [2.11.0] - 2026-06-09
 
 ### Added
