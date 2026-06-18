@@ -171,7 +171,7 @@ import type { SearchFilters } from "./skill-index";
 import { VERSION_STRING } from "./utils/version";
 import { buildShadowingReport } from "./utils/path-shadowing";
 import { parseEditorCommand } from "./utils/editor";
-import { installLibrarySkill } from "./library";
+import { installLibrarySkill, listLibrarySkills } from "./library";
 import { setVerbose } from "./logger";
 import { join as joinPath, resolve, relative as relativePath } from "path";
 import type {
@@ -546,6 +546,7 @@ ${ansi.bold("Commands:")}
   disable <target>       Disable skill(s) without uninstalling
   enable <target>        Re-enable disabled skill(s)
   install <source>       Install a skill from GitHub or local path
+  library                Manage centrally installed library skills
   audit                  Detect duplicate skills across tools
   audit security <name>  Run security audit on a skill (or GitHub source)
   export                 Export skill inventory as JSON manifest
@@ -797,6 +798,23 @@ ${ansi.bold("Examples:")}
   asm config show                   ${ansi.dim("View current config")}
   asm config edit                   ${ansi.dim("Edit in $EDITOR")}
   asm config reset -y               ${ansi.dim("Reset without confirmation")}`);
+}
+
+function printLibraryHelp() {
+  console.log(`${ansi.bold("Usage:")} asm library <subcommand> [options]
+
+Manage centrally installed library skills.
+
+${ansi.bold("Subcommands:")}
+  list     List skills installed in the local library
+
+${ansi.bold("Options:")}
+  --json            Output as JSON array
+  -V, --verbose     Show debug output
+
+${ansi.bold("Examples:")}
+  asm library list                  ${ansi.dim("List local library skills")}
+  asm library list --json           ${ansi.dim("Output as JSON")}`);
 }
 
 // ─── Command Handlers ───────────────────────────────────────────────────────
@@ -2057,6 +2075,67 @@ async function cmdConfig(args: ParsedArgs) {
       process.exit(2);
     }
   }
+}
+
+async function cmdLibrary(args: ParsedArgs) {
+  if (args.flags.help) {
+    printLibraryHelp();
+    return;
+  }
+
+  if (args.subcommand !== "list") {
+    error("Missing or unknown library subcommand. Use: asm library list");
+    console.error(`Run "asm library --help" for usage.`);
+    process.exit(2);
+  }
+
+  const rows = await listLibrarySkills();
+
+  if (args.flags.json) {
+    console.log(JSON.stringify(rows, null, 2));
+    return;
+  }
+
+  if (rows.length === 0) {
+    console.log(ansi.dim("No skills installed in the local library."));
+    return;
+  }
+
+  const widths = {
+    name: Math.max("Name".length, ...rows.map((r) => r.name.length)),
+    version: Math.max("Version".length, ...rows.map((r) => r.version.length)),
+    source: Math.max("Source".length, ...rows.map((r) => r.source.length)),
+    path: Math.max("Path".length, ...rows.map((r) => r.skillPath.length)),
+    status: "Status".length,
+  };
+  const formatRow = (
+    name: string,
+    version: string,
+    source: string,
+    path: string,
+    status: string,
+  ) =>
+    [
+      name.padEnd(widths.name),
+      version.padEnd(widths.version),
+      source.padEnd(widths.source),
+      path.padEnd(widths.path),
+      status.padEnd(widths.status),
+    ].join("  ");
+
+  const lines = [
+    ansi.bold(formatRow("Name", "Version", "Source", "Path", "Status")),
+    ...rows.map((row) =>
+      formatRow(
+        row.name,
+        row.version,
+        row.source,
+        row.skillPath,
+        row.missing ? "missing" : "ok",
+      ),
+    ),
+  ];
+  console.log(lines.join("\n"));
 }
 
 function printInstallHelp() {
@@ -6046,6 +6125,9 @@ export async function runCLI(argv: string[]): Promise<void> {
     case "install":
       await cmdInstall(args);
       break;
+    case "library":
+      await cmdLibrary(args);
+      break;
     case "config":
       await cmdConfig(args);
       break;
@@ -6110,6 +6192,7 @@ export function isCLIMode(argv: string[]): boolean {
     "audit",
     "config",
     "install",
+    "library",
     "export",
     "import",
     "init",

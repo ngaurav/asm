@@ -32,6 +32,20 @@ export interface LibraryPaths {
   lockPath?: string;
 }
 
+export interface LibrarySkillInfo {
+  dirName: string;
+  name: string;
+  version: string;
+  source: string;
+  sourceType?: "registry" | "github" | "local";
+  commitHash: string;
+  ref: string | null;
+  skillPath: string;
+  libraryPath: string;
+  installedAt: string;
+  missing: boolean;
+}
+
 export function emptyLibraryLock(): LibraryLockFile {
   return { version: 1, skills: {} };
 }
@@ -84,6 +98,26 @@ export async function writeLibraryLock(
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, JSON.stringify(lock, null, 2) + "\n", "utf-8");
+}
+
+export async function listLibrarySkills(
+  path: string = getLibraryLockPath(),
+): Promise<LibrarySkillInfo[]> {
+  const lock = await readLibraryLock(path);
+  const rows: LibrarySkillInfo[] = [];
+
+  for (const [dirName, entry] of Object.entries(lock.skills)) {
+    let missing = false;
+    try {
+      await access(join(entry.libraryPath, "SKILL.md"));
+    } catch {
+      missing = true;
+    }
+    rows.push({ dirName, ...entry, missing });
+  }
+
+  rows.sort((a, b) => a.name.localeCompare(b.name));
+  return rows;
 }
 
 async function pathExists(path: string): Promise<boolean> {

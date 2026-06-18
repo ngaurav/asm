@@ -414,6 +414,7 @@ describe("CLI integration: --help", () => {
     expect(stdout).toContain("search");
     expect(stdout).toContain("inspect");
     expect(stdout).toContain("uninstall");
+    expect(stdout).toContain("library");
     expect(stdout).toContain("config");
   });
 
@@ -1437,6 +1438,51 @@ describe("CLI integration: install --library", () => {
     await expect(
       lstat(join(homeDir, ".claude", "skills", "one")),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("library list --json returns centrally installed skills", async () => {
+    const source = join(tempDir, "source");
+    await mkdir(join(source, "skills", "one"), { recursive: true });
+    await writeFile(
+      join(source, "skills", "one", "SKILL.md"),
+      "---\nname: one\nversion: 1.0.0\n---\n# One\n",
+    );
+
+    const homeDir = join(tempDir, "home");
+    await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        source,
+        "--library",
+        "--all",
+        "-y",
+        "--json",
+      ],
+      {
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    const res = await spawnCollect(
+      ["npx", "tsx", CLI_BIN, "library", "list", "--json"],
+      {
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(0);
+    const rows = JSON.parse(res.stdout);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      dirName: "one",
+      name: "one",
+      version: "1.0.0",
+      source: "local:" + source,
+      skillPath: "skills/one",
+    });
   });
 
   test("does not overwrite an existing library skill when only provider install exists", async () => {
