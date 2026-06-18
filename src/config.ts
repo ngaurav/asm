@@ -18,6 +18,9 @@ const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 const LOCK_PATH = join(CONFIG_DIR, ".skill-lock.json");
 const SKILL_STATE_PATH = join(CONFIG_DIR, "skill-state.json");
 const INDEX_DIR = join(CONFIG_DIR, "skill-index");
+const LIBRARY_DIR = join(CONFIG_DIR, "library");
+const LIBRARY_SKILLS_DIR = join(LIBRARY_DIR, "skills");
+const LIBRARY_LOCK_PATH = join(LIBRARY_DIR, "library-lock.json");
 
 const DEFAULT_PROVIDERS: ProviderConfig[] = [
   // ── Priority providers (ordered by user preference) ──
@@ -188,6 +191,18 @@ export function getSkillStatePath(): string {
 
 export function getIndexDir(): string {
   return INDEX_DIR;
+}
+
+export function getLibraryDir(): string {
+  return LIBRARY_DIR;
+}
+
+export function getLibrarySkillsDir(): string {
+  return LIBRARY_SKILLS_DIR;
+}
+
+export function getLibraryLockPath(): string {
+  return LIBRARY_LOCK_PATH;
 }
 
 export function getBundledIndexDir(): string {

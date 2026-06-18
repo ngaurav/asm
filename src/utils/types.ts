@@ -150,6 +150,23 @@ export interface LockFile {
   skills: Record<string, LockEntry>;
 }
 
+export interface LibrarySkillEntry {
+  name: string;
+  version: string;
+  source: string;
+  commitHash: string;
+  ref: string | null;
+  skillPath: string;
+  libraryPath: string;
+  installedAt: string;
+  sourceType?: "registry" | "github" | "local";
+}
+
+export interface LibraryLockFile {
+  version: 1;
+  skills: Record<string, LibrarySkillEntry>;
+}
+
 // ─── Export Types ───────────────────────────────────────────────────────────
 
 export interface ExportedSkill {
