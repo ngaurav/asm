@@ -171,7 +171,12 @@ import type { SearchFilters } from "./skill-index";
 import { VERSION_STRING } from "./utils/version";
 import { buildShadowingReport } from "./utils/path-shadowing";
 import { parseEditorCommand } from "./utils/editor";
-import { installLibrarySkill, listLibrarySkills } from "./library";
+import {
+  activateLibrarySkill,
+  findLibrarySkill,
+  installLibrarySkill,
+  listLibrarySkills,
+} from "./library";
 import { setVerbose } from "./logger";
 import { join as joinPath, resolve, relative as relativePath } from "path";
 import type {
@@ -546,6 +551,7 @@ ${ansi.bold("Commands:")}
   disable <target>       Disable skill(s) without uninstalling
   enable <target>        Re-enable disabled skill(s)
   install <source>       Install a skill from GitHub or local path
+  activate <skill>       Link a library skill into a provider
   library                Manage centrally installed library skills
   audit                  Detect duplicate skills across tools
   audit security <name>  Run security audit on a skill (or GitHub source)
@@ -815,6 +821,24 @@ ${ansi.bold("Options:")}
 ${ansi.bold("Examples:")}
   asm library list                  ${ansi.dim("List local library skills")}
   asm library list --json           ${ansi.dim("Output as JSON")}`);
+}
+
+function printActivateHelp() {
+  console.log(`${ansi.bold("Usage:")} asm activate <skill> -p <tool> -s <scope> [options]
+
+Link a centrally installed library skill into a provider skill folder.
+
+${ansi.bold("Options:")}
+  -p, --tool <name>      Provider to activate into (e.g., claude, codex)
+  -s, --scope <scope>    Activation scope: global or project
+  --name <name>          Link name to create (default: library directory name)
+  -f, --force            Replace an existing target
+  --json                 Output as JSON object
+  -V, --verbose          Show debug output
+
+${ansi.bold("Examples:")}
+  asm activate brainstorming -p codex -s project
+  asm activate brainstorming -p claude -s global --json`);
 }
 
 // ─── Command Handlers ───────────────────────────────────────────────────────
@@ -2136,6 +2160,73 @@ async function cmdLibrary(args: ParsedArgs) {
     ),
   ];
   console.log(lines.join("\n"));
+}
+
+async function cmdActivate(args: ParsedArgs) {
+  if (args.flags.help) {
+    printActivateHelp();
+    return;
+  }
+
+  const skillName = args.subcommand;
+  if (!skillName) {
+    error("Missing skill name. Use: asm activate <skill>");
+    console.error(`Run "asm activate --help" for usage.`);
+    process.exit(2);
+  }
+
+  if (args.flags.scope === "both") {
+    error("Activation requires --scope global or --scope project.");
+    process.exit(2);
+  }
+
+  const rows = await listLibrarySkills();
+  const skill = findLibrarySkill(rows, skillName);
+  if (!skill) {
+    error(`Library skill "${skillName}" not found. Run "asm library list".`);
+    process.exit(1);
+  }
+  if (skill.missing) {
+    error(
+      `Library skill "${skillName}" is missing on disk: ${skill.libraryPath}`,
+    );
+    process.exit(1);
+  }
+
+  const config = await loadConfig();
+  const { provider } = await resolveProvider(
+    config,
+    args.flags.provider,
+    process.stdin.isTTY,
+  );
+  const targetTemplate =
+    args.flags.scope === "global" ? provider.global : provider.project;
+  const targetDir = resolveProviderPath(targetTemplate);
+  const activationName = args.flags.name || skill.dirName;
+  const result = await activateLibrarySkill({
+    libraryPath: skill.libraryPath,
+    targetDir,
+    activationName,
+    force: args.flags.force,
+  });
+
+  const payload = {
+    name: activationName,
+    skill: skill.dirName,
+    provider: provider.name,
+    scope: args.flags.scope,
+    path: result.symlinkPath,
+    target: result.targetPath,
+  };
+
+  if (args.flags.json) {
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+
+  console.log(
+    `${ansi.green("✓")} activated ${activationName} (${provider.name}/${args.flags.scope}) -> ${result.targetPath}`,
+  );
 }
 
 function printInstallHelp() {
@@ -6125,6 +6216,9 @@ export async function runCLI(argv: string[]): Promise<void> {
     case "install":
       await cmdInstall(args);
       break;
+    case "activate":
+      await cmdActivate(args);
+      break;
     case "library":
       await cmdLibrary(args);
       break;
@@ -6192,6 +6286,7 @@ export function isCLIMode(argv: string[]): boolean {
     "audit",
     "config",
     "install",
+    "activate",
     "library",
     "export",
     "import",

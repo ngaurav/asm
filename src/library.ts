@@ -2,9 +2,11 @@ import {
   access,
   copyFile,
   cp,
+  lstat,
   mkdir,
   readFile,
   rm,
+  symlink,
   writeFile,
 } from "fs/promises";
 import { dirname, join } from "path";
@@ -120,6 +122,41 @@ export async function listLibrarySkills(
   return rows;
 }
 
+export function findLibrarySkill(
+  rows: LibrarySkillInfo[],
+  name: string,
+): LibrarySkillInfo | null {
+  const exactDir = rows.find((r) => r.dirName === name);
+  if (exactDir) return exactDir;
+  const exactName = rows.find((r) => r.name === name);
+  return exactName ?? null;
+}
+
+export async function activateLibrarySkill(input: {
+  libraryPath: string;
+  targetDir: string;
+  activationName: string;
+  force: boolean;
+}): Promise<{ symlinkPath: string; targetPath: string }> {
+  const activationName = validateSkillDirectoryName(input.activationName);
+  const symlinkPath = join(input.targetDir, activationName);
+  try {
+    await lstat(symlinkPath);
+    if (!input.force) {
+      throw new Error(
+        `Target already exists: ${symlinkPath}. Use --force to overwrite.`,
+      );
+    }
+    await rm(symlinkPath, { recursive: true, force: true });
+  } catch (err: any) {
+    if (err?.message?.includes("--force")) throw err;
+  }
+
+  await mkdir(input.targetDir, { recursive: true });
+  await symlink(input.libraryPath, symlinkPath, "dir");
+  return { symlinkPath, targetPath: input.libraryPath };
+}
+
 async function pathExists(path: string): Promise<boolean> {
   try {
     await access(path);
@@ -130,7 +167,7 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-function validateLibraryName(name: string): string {
+function validateSkillDirectoryName(name: string): string {
   if (!name) {
     throw new Error("Invalid skill name: name cannot be empty");
   }
@@ -169,7 +206,7 @@ export async function installLibrarySkill(
 ): Promise<{ name: string; version: string; libraryPath: string }> {
   const skillsDir = paths.skillsDir ?? getLibrarySkillsDir();
   const lockPath = paths.lockPath ?? getLibraryLockPath();
-  const libraryName = validateLibraryName(plan.libraryName);
+  const libraryName = validateSkillDirectoryName(plan.libraryName);
   const libraryPath = join(skillsDir, libraryName);
 
   if (await pathExists(libraryPath)) {

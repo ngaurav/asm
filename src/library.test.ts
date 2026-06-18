@@ -1,9 +1,19 @@
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readlink,
+  rm,
+  symlink,
+  writeFile,
+} from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
   emptyLibraryLock,
+  activateLibrarySkill,
   installLibrarySkill,
   readLibraryLock,
   writeLibraryLock,
@@ -195,6 +205,94 @@ describe("installLibrarySkill", () => {
     await expect(readLibraryLock(lockPath)).resolves.toEqual({
       version: 1,
       skills: {},
+    });
+  });
+});
+
+describe("activateLibrarySkill", () => {
+  let tempDir: string;
+  let libraryPath: string;
+  let targetDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "asm-library-activate-"));
+    libraryPath = join(tempDir, "library", "skills", "brainstorming");
+    targetDir = join(tempDir, "provider", "skills");
+    await mkdir(libraryPath, { recursive: true });
+    await writeFile(
+      join(libraryPath, "SKILL.md"),
+      "---\nname: brainstorming\n---\n# Brainstorming\n",
+    );
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test("creates a symlink from provider target to library skill", async () => {
+    const result = await activateLibrarySkill({
+      libraryPath,
+      targetDir,
+      activationName: "brainstorming",
+      force: false,
+    });
+
+    const symlinkPath = join(targetDir, "brainstorming");
+    expect(result).toEqual({ symlinkPath, targetPath: libraryPath });
+    await expect(readlink(symlinkPath)).resolves.toBe(libraryPath);
+    await expect(lstat(symlinkPath)).resolves.toMatchObject({
+      isSymbolicLink: expect.any(Function),
+    });
+    expect((await lstat(symlinkPath)).isSymbolicLink()).toBe(true);
+  });
+
+  test("refuses an existing target without force", async () => {
+    const symlinkPath = join(targetDir, "brainstorming");
+    const existingPath = join(tempDir, "existing");
+    await mkdir(targetDir, { recursive: true });
+    await mkdir(existingPath, { recursive: true });
+    await symlink(existingPath, symlinkPath, "dir");
+
+    await expect(
+      activateLibrarySkill({
+        libraryPath,
+        targetDir,
+        activationName: "brainstorming",
+        force: false,
+      }),
+    ).rejects.toThrow(
+      `Target already exists: ${symlinkPath}. Use --force to overwrite.`,
+    );
+
+    await expect(readlink(symlinkPath)).resolves.toBe(existingPath);
+  });
+
+  test("rejects invalid activation names before touching filesystem targets", async () => {
+    const outsideDir = join(tempDir, "provider", "outside");
+    const outsideSentinel = join(outsideDir, "sentinel.txt");
+    await mkdir(outsideDir, { recursive: true });
+    await writeFile(outsideSentinel, "keep me", "utf-8");
+
+    for (const activationName of [
+      "",
+      "../outside",
+      "nested/name",
+      "nested\\name",
+      "bad\0name",
+    ]) {
+      await expect(
+        activateLibrarySkill({
+          libraryPath,
+          targetDir,
+          activationName,
+          force: true,
+        }),
+      ).rejects.toThrow(/Invalid skill name/);
+    }
+
+    await expect(readFile(outsideSentinel, "utf-8")).resolves.toBe("keep me");
+    await expect(lstat(join(targetDir, "nested"))).rejects.toMatchObject({
+      code: "ENOENT",
     });
   });
 });

@@ -1485,6 +1485,71 @@ describe("CLI integration: install --library", () => {
     });
   });
 
+  test("activate links a library skill into a project provider", async () => {
+    const source = join(tempDir, "source");
+    const sourceSkillDir = join(source, "skills", "brainstorming");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      "---\nname: brainstorming\nversion: 1.0.0\n---\n# Brainstorming\n",
+    );
+
+    const homeDir = join(tempDir, "home");
+    const installRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        sourceSkillDir,
+        "--library",
+        "-y",
+        "--json",
+      ],
+      {
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+    expect(installRes.exitCode).toBe(0);
+
+    const projectDir = join(tempDir, "project");
+    await mkdir(projectDir, { recursive: true });
+    const activateRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "activate",
+        "brainstorming",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+        "--json",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(activateRes.exitCode).toBe(0);
+    const payload = JSON.parse(activateRes.stdout);
+    expect(payload.name).toBe("brainstorming");
+
+    const targetPath = join(projectDir, ".codex", "skills", "brainstorming");
+    const libraryPath = join(
+      homeDir,
+      ".config",
+      "agent-skill-manager",
+      "library",
+      "skills",
+      "brainstorming",
+    );
+    expect((await lstat(targetPath)).isSymbolicLink()).toBe(true);
+    await expect(readlink(targetPath)).resolves.toBe(libraryPath);
+  });
+
   test("does not overwrite an existing library skill when only provider install exists", async () => {
     const homeDir = join(tempDir, "home");
     const providerSkillDir = join(homeDir, ".claude", "skills", "foo");
