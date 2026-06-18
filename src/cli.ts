@@ -2738,6 +2738,12 @@ async function cmdInstall(args: ParsedArgs) {
       console.info(`  ${ansi.dim(sourceStr)}`);
     }
 
+    if (args.flags.library && args.flags.method === "vercel") {
+      throw new Error(
+        "--library cannot be combined with --method vercel because the Vercel installer writes to provider skill folders. Use the default method for library installs.",
+      );
+    }
+
     // Vercel method: delegate to npx skills add and then continue with
     // standard asm install to register in asm's local inventory
     if (args.flags.method === "vercel") {

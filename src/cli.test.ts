@@ -1723,42 +1723,8 @@ describe("CLI integration: install --library", () => {
     expect(librarySkillMd).not.toContain("# New source");
   });
 
-  test("does not let Vercel method implicit force overwrite an existing library skill", async () => {
+  test("rejects Vercel method for library installs before provider delegation", async () => {
     const homeDir = join(tempDir, "home");
-    const providerSkillDir = join(homeDir, ".claude", "skills", "foo");
-    await mkdir(providerSkillDir, { recursive: true });
-    await writeFile(
-      join(providerSkillDir, "SKILL.md"),
-      `---\nname: foo\nversion: 1.0.0\n---\n# Existing provider\n`,
-    );
-
-    const librarySkillDir = join(
-      homeDir,
-      ".config",
-      "agent-skill-manager",
-      "library",
-      "skills",
-      "foo",
-    );
-    await mkdir(librarySkillDir, { recursive: true });
-    await writeFile(
-      join(librarySkillDir, "SKILL.md"),
-      `---\nname: foo\nversion: 1.0.0\n---\n# Existing library\n`,
-    );
-    await mkdir(
-      join(homeDir, ".config", "agent-skill-manager", "library"),
-      { recursive: true },
-    );
-    await writeFile(
-      join(
-        homeDir,
-        ".config",
-        "agent-skill-manager",
-        "library",
-        "library-lock.json",
-      ),
-      JSON.stringify({ version: 1, skills: {} }, null, 2) + "\n",
-    );
 
     const sourceSkillDir = join(tempDir, "source-vercel", "foo");
     await mkdir(sourceSkillDir, { recursive: true });
@@ -1773,13 +1739,13 @@ describe("CLI integration: install --library", () => {
     await writeFile(
       fakeNpx,
       `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  echo "10.0.0"
-  exit 0
-fi
-echo "fake skills add"
-exit 0
-`,
+	if [ "$1" = "--version" ]; then
+	  echo "10.0.0"
+	  exit 0
+	fi
+	echo "unexpected npx delegate"
+	exit 42
+	`,
     );
     await chmod(fakeNpx, 0o755);
 
@@ -1811,15 +1777,27 @@ exit 0
       res.exitCode,
       `stdout:\n${res.stdout}\nstderr:\n${res.stderr}`,
     ).not.toBe(0);
-    expect(`${res.stdout}\n${res.stderr}`).toMatch(
-      /Library skill already exists|--force/,
+    expect(`${res.stdout}\n${res.stderr}`).toContain(
+      "--library cannot be combined with --method vercel",
     );
-    const librarySkillMd = await readFile(
-      join(librarySkillDir, "SKILL.md"),
-      "utf-8",
+    expect(`${res.stdout}\n${res.stderr}`).not.toContain(
+      "unexpected npx delegate",
     );
-    expect(librarySkillMd).toContain("# Existing library");
-    expect(librarySkillMd).not.toContain("# New source");
+    await expect(
+      lstat(join(homeDir, ".claude", "skills", "foo")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      lstat(
+        join(
+          homeDir,
+          ".config",
+          "agent-skill-manager",
+          "library",
+          "skills",
+          "foo",
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 
