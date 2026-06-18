@@ -1550,6 +1550,88 @@ describe("CLI integration: install --library", () => {
     await expect(readlink(targetPath)).resolves.toBe(libraryPath);
   });
 
+  test("activate unknown library skill exits with actionable message", async () => {
+    const homeDir = join(tempDir, "home");
+    const projectDir = join(tempDir, "project");
+    await mkdir(projectDir, { recursive: true });
+
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "activate",
+        "missing-skill",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain('Library skill "missing-skill" not found');
+    expect(res.stderr).toContain("asm library list");
+  });
+
+  test("activate refuses existing target without force", async () => {
+    const source = join(tempDir, "source");
+    const sourceSkillDir = join(source, "skills", "brainstorming");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      "---\nname: brainstorming\nversion: 1.0.0\n---\n# Brainstorming\n",
+    );
+
+    const homeDir = join(tempDir, "home");
+    const installRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        sourceSkillDir,
+        "--library",
+        "-y",
+        "--json",
+      ],
+      {
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+    expect(installRes.exitCode).toBe(0);
+
+    const projectDir = join(tempDir, "project");
+    const targetPath = join(projectDir, ".codex", "skills", "brainstorming");
+    await mkdir(targetPath, { recursive: true });
+
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "activate",
+        "brainstorming",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain("Target already exists");
+    expect(res.stderr).toContain("--force");
+  });
+
   test("does not overwrite an existing library skill when only provider install exists", async () => {
     const homeDir = join(tempDir, "home");
     const providerSkillDir = join(homeDir, ".claude", "skills", "foo");
