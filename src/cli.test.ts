@@ -20,6 +20,7 @@ import {
   readFile,
   lstat,
   readlink,
+  realpath,
   symlink,
   chmod,
 } from "fs/promises";
@@ -106,6 +107,12 @@ describe("parseArgs", () => {
     expect(result.command).toBe("uninstall");
     expect(result.subcommand).toBe("blog-draft");
     expect(result.flags.yes).toBe(true);
+  });
+
+  test("parses deactivate with skill name", () => {
+    const result = parse("deactivate", "brainstorming");
+    expect(result.command).toBe("deactivate");
+    expect(result.subcommand).toBe("brainstorming");
   });
 
   test("parses -y as alias for --yes", () => {
@@ -350,6 +357,10 @@ describe("isCLIMode", () => {
     expect(check("uninstall")).toBe(true);
   });
 
+  test("deactivate → CLI mode", () => {
+    expect(check("deactivate")).toBe(true);
+  });
+
   test("config → CLI mode", () => {
     expect(check("config")).toBe(true);
   });
@@ -414,6 +425,7 @@ describe("CLI integration: --help", () => {
     expect(stdout).toContain("search");
     expect(stdout).toContain("inspect");
     expect(stdout).toContain("uninstall");
+    expect(stdout).toContain("deactivate");
     expect(stdout).toContain("library");
     expect(stdout).toContain("config");
   });
@@ -462,6 +474,13 @@ describe("CLI integration: per-command --help", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("asm uninstall");
     expect(stdout).toContain("--yes");
+  });
+
+  test("deactivate --help shows deactivate usage", async () => {
+    const { stdout, exitCode } = await runCLI("deactivate", "--help");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("asm deactivate");
+    expect(stdout).toContain("<global|project>");
   });
 
   test("config --help shows config subcommands", async () => {
@@ -1630,6 +1649,228 @@ describe("CLI integration: install --library", () => {
     expect(res.exitCode).toBe(1);
     expect(res.stderr).toContain("Target already exists");
     expect(res.stderr).toContain("--force");
+  });
+
+  test("deactivate removes a project activation symlink after install+activate", async () => {
+    const source = join(tempDir, "source");
+    const sourceSkillDir = join(source, "skills", "brainstorming");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      "---\nname: brainstorming\nversion: 1.0.0\n---\n# Brainstorming\n",
+    );
+
+    const homeDir = join(tempDir, "home");
+    const installRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        sourceSkillDir,
+        "--library",
+        "-y",
+        "--json",
+      ],
+      {
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+    expect(installRes.exitCode).toBe(0);
+
+    const projectDir = join(tempDir, "project");
+    await mkdir(projectDir, { recursive: true });
+    const activateRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "activate",
+        "brainstorming",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+        "--json",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+    expect(activateRes.exitCode).toBe(0);
+
+    const targetPath = join(projectDir, ".codex", "skills", "brainstorming");
+    expect((await lstat(targetPath)).isSymbolicLink()).toBe(true);
+    const resolvedProjectDir = await realpath(projectDir);
+    const resolvedTargetPath = join(
+      resolvedProjectDir,
+      ".codex",
+      "skills",
+      "brainstorming",
+    );
+
+    const deactivateRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "deactivate",
+        "brainstorming",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+        "--json",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(deactivateRes.exitCode).toBe(0);
+    const payload = JSON.parse(deactivateRes.stdout);
+    expect(payload).toMatchObject({
+      name: "brainstorming",
+      provider: "codex",
+      scope: "project",
+      path: resolvedTargetPath,
+    });
+    await expect(lstat(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readFile(
+        join(
+          homeDir,
+          ".config",
+          "agent-skill-manager",
+          "library",
+          "skills",
+          "brainstorming",
+          "SKILL.md",
+        ),
+        "utf-8",
+      ),
+    ).resolves.toContain("# Brainstorming");
+  });
+
+  test("deactivate refuses a real provider directory", async () => {
+    const homeDir = join(tempDir, "home");
+    const projectDir = join(tempDir, "project");
+    const targetPath = join(projectDir, ".codex", "skills", "brainstorming");
+    await mkdir(targetPath, { recursive: true });
+
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "deactivate",
+        "brainstorming",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain("Refusing to deactivate non-symlink target");
+    expect(res.stderr).not.toMatch(/\n\s+at\s+/);
+    await expect(lstat(targetPath)).resolves.toBeTruthy();
+  });
+
+  test("deactivate reports missing activation", async () => {
+    const homeDir = join(tempDir, "home");
+    const projectDir = join(tempDir, "project");
+    await mkdir(projectDir, { recursive: true });
+
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "deactivate",
+        "brainstorming",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain('Skill "brainstorming" is not active');
+    expect(res.stderr).not.toMatch(/\n\s+at\s+/);
+  });
+
+  test("deactivate missing activation --json returns structured error", async () => {
+    const homeDir = join(tempDir, "home");
+    const projectDir = join(tempDir, "project");
+    await mkdir(projectDir, { recursive: true });
+
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "deactivate",
+        "brainstorming",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+        "--json",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(1);
+    expect(JSON.parse(res.stdout)).toEqual({
+      error: 'Skill "brainstorming" is not active for codex/project.',
+    });
+    expect(res.stderr).not.toMatch(/\n\s+at\s+/);
+  });
+
+  test("deactivate unknown provider exits 2 with usage error", async () => {
+    const homeDir = join(tempDir, "home");
+    const projectDir = join(tempDir, "project");
+    await mkdir(projectDir, { recursive: true });
+
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "deactivate",
+        "brainstorming",
+        "-p",
+        "no-such-provider",
+        "-s",
+        "project",
+        "--json",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("Unknown provider");
+    expect(res.stdout).toBe("");
+    expect(res.stderr).not.toMatch(/\n\s+at\s+/);
   });
 
   test("does not overwrite an existing library skill when only provider install exists", async () => {

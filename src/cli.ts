@@ -173,6 +173,7 @@ import { buildShadowingReport } from "./utils/path-shadowing";
 import { parseEditorCommand } from "./utils/editor";
 import {
   activateLibrarySkill,
+  deactivateLibrarySkill,
   findLibrarySkill,
   installLibrarySkill,
   listLibrarySkills,
@@ -552,6 +553,7 @@ ${ansi.bold("Commands:")}
   enable <target>        Re-enable disabled skill(s)
   install <source>       Install a skill from GitHub or local path
   activate <skill>       Link a library skill into a provider
+  deactivate <skill>     Remove a library activation from a provider
   library                Manage centrally installed library skills
   audit                  Detect duplicate skills across tools
   audit security <name>  Run security audit on a skill (or GitHub source)
@@ -839,6 +841,22 @@ ${ansi.bold("Options:")}
 ${ansi.bold("Examples:")}
   asm activate brainstorming -p codex -s project
   asm activate brainstorming -p claude -s global --json`);
+}
+
+function printDeactivateHelp() {
+  console.log(`${ansi.bold("Usage:")} asm deactivate <skill> -p <tool> -s <global|project> [options]
+
+Remove a centrally activated library skill from a provider skill folder.
+
+${ansi.bold("Options:")}
+  -p, --tool <name>      Provider to deactivate from (e.g., claude, codex)
+  -s, --scope <scope>    Activation scope: global or project
+  --json                 Output as JSON object
+  -V, --verbose          Show debug output
+
+${ansi.bold("Examples:")}
+  asm deactivate brainstorming -p codex -s project
+  asm deactivate brainstorming -p claude -s global --json`);
 }
 
 // ─── Command Handlers ───────────────────────────────────────────────────────
@@ -2227,6 +2245,66 @@ async function cmdActivate(args: ParsedArgs) {
   console.log(
     `${ansi.green("✓")} activated ${activationName} (${provider.name}/${args.flags.scope}) -> ${result.targetPath}`,
   );
+}
+
+async function cmdDeactivate(args: ParsedArgs) {
+  if (args.flags.help) {
+    printDeactivateHelp();
+    return;
+  }
+
+  const skillName = args.subcommand;
+  if (!skillName) {
+    error("Missing skill name. Use: asm deactivate <skill>");
+    console.error(`Run "asm deactivate --help" for usage.`);
+    process.exit(2);
+  }
+
+  if (args.flags.scope === "both") {
+    error("Deactivation requires --scope global or --scope project.");
+    process.exit(2);
+  }
+
+  const config = await loadConfig();
+  let provider: ProviderConfig;
+  try {
+    provider = (
+      await resolveProvider(config, args.flags.provider, process.stdin.isTTY)
+    ).provider;
+  } catch (err: any) {
+    const message = err instanceof Error ? err.message : String(err);
+    error(message);
+    process.exit(2);
+  }
+
+  try {
+    const targetTemplate =
+      args.flags.scope === "global" ? provider.global : provider.project;
+    const targetDir = resolveProviderPath(targetTemplate);
+    const result = await deactivateLibrarySkill({
+      targetDir,
+      activationName: skillName,
+      provider: provider.name,
+      scope: args.flags.scope,
+    });
+
+    if (args.flags.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    console.log(
+      `${ansi.green("✓")} deactivated ${result.name} (${result.provider}/${result.scope}) -> ${result.target}`,
+    );
+  } catch (err: any) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (args.flags.json) {
+      console.log(JSON.stringify({ error: message }, null, 2));
+      process.exit(1);
+    }
+    error(message);
+    process.exit(1);
+  }
 }
 
 function printInstallHelp() {
@@ -6225,6 +6303,9 @@ export async function runCLI(argv: string[]): Promise<void> {
     case "activate":
       await cmdActivate(args);
       break;
+    case "deactivate":
+      await cmdDeactivate(args);
+      break;
     case "library":
       await cmdLibrary(args);
       break;
@@ -6293,6 +6374,7 @@ export function isCLIMode(argv: string[]): boolean {
     "config",
     "install",
     "activate",
+    "deactivate",
     "library",
     "export",
     "import",
