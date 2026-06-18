@@ -5,11 +5,13 @@ import {
   lstat,
   mkdir,
   readFile,
+  readlink,
+  realpath,
   rm,
   symlink,
   writeFile,
 } from "fs/promises";
-import { dirname, join } from "path";
+import { dirname, isAbsolute, join, relative, resolve } from "path";
 import { getLibraryLockPath, getLibrarySkillsDir } from "./config";
 import { debug } from "./logger";
 import { parseFrontmatter, resolveVersion } from "./utils/frontmatter";
@@ -130,6 +132,97 @@ export function findLibrarySkill(
   if (exactDir) return exactDir;
   const exactName = rows.find((r) => r.name === name);
   return exactName ?? null;
+}
+
+export interface DeactivateLibrarySkillInput {
+  targetDir: string;
+  activationName: string;
+  provider: string;
+  scope: "global" | "project";
+  librarySkillsDir?: string;
+}
+
+export interface DeactivateLibrarySkillResult {
+  name: string;
+  provider: string;
+  scope: "global" | "project";
+  path: string;
+  target: string;
+}
+
+function isInsideDirectory(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
+}
+
+async function realpathIfExists(path: string): Promise<{
+  path: string;
+  exists: boolean;
+}> {
+  try {
+    return { path: await realpath(path), exists: true };
+  } catch (err: any) {
+    if (err?.code === "ENOENT") {
+      return { path: resolve(path), exists: false };
+    }
+    throw err;
+  }
+}
+
+export async function deactivateLibrarySkill(
+  input: DeactivateLibrarySkillInput,
+): Promise<DeactivateLibrarySkillResult> {
+  const activationName = validateSkillDirectoryName(input.activationName);
+  const symlinkPath = join(input.targetDir, activationName);
+
+  let stat;
+  try {
+    stat = await lstat(symlinkPath);
+  } catch (err: any) {
+    if (err?.code === "ENOENT") {
+      throw new Error(
+        `Skill "${activationName}" is not active for ${input.provider}/${input.scope}.`,
+      );
+    }
+    throw err;
+  }
+
+  if (!stat.isSymbolicLink()) {
+    throw new Error(
+      `Refusing to deactivate non-symlink target: ${symlinkPath}.`,
+    );
+  }
+
+  const rawTarget = await readlink(symlinkPath);
+  const absoluteTarget = isAbsolute(rawTarget)
+    ? rawTarget
+    : resolve(dirname(symlinkPath), rawTarget);
+  const librarySkillsDir = input.librarySkillsDir ?? getLibrarySkillsDir();
+  const resolvedTarget = await realpathIfExists(absoluteTarget);
+  const resolvedLibrarySkillsDir = await realpathIfExists(librarySkillsDir);
+  const useRealPaths = resolvedTarget.exists && resolvedLibrarySkillsDir.exists;
+  const targetPathForContainment = useRealPaths
+    ? resolvedTarget.path
+    : resolve(absoluteTarget);
+  const libraryPathForContainment = useRealPaths
+    ? resolvedLibrarySkillsDir.path
+    : resolve(librarySkillsDir);
+
+  if (!isInsideDirectory(libraryPathForContainment, targetPathForContainment)) {
+    throw new Error(
+      `Refusing to deactivate symlink outside the ASM library: ${symlinkPath}.`,
+    );
+  }
+
+  await rm(symlinkPath);
+
+  return {
+    name: activationName,
+    provider: input.provider,
+    scope: input.scope,
+    path: symlinkPath,
+    target: targetPathForContainment,
+  };
 }
 
 export async function activateLibrarySkill(input: {

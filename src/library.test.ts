@@ -5,15 +5,17 @@ import {
   mkdtemp,
   readFile,
   readlink,
+  realpath,
   rm,
   symlink,
   writeFile,
 } from "fs/promises";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, relative, resolve } from "path";
 import {
   emptyLibraryLock,
   activateLibrarySkill,
+  deactivateLibrarySkill,
   installLibrarySkill,
   readLibraryLock,
   writeLibraryLock,
@@ -294,5 +296,220 @@ describe("activateLibrarySkill", () => {
     await expect(lstat(join(targetDir, "nested"))).rejects.toMatchObject({
       code: "ENOENT",
     });
+  });
+});
+
+describe("deactivateLibrarySkill", () => {
+  let tempDir: string;
+  let librarySkillsDir: string;
+  let libraryPath: string;
+  let targetDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "asm-library-deactivate-"));
+    librarySkillsDir = join(tempDir, "library", "skills");
+    libraryPath = join(librarySkillsDir, "brainstorming");
+    targetDir = join(tempDir, "provider", "skills");
+    await mkdir(libraryPath, { recursive: true });
+    await mkdir(targetDir, { recursive: true });
+    await writeFile(
+      join(libraryPath, "SKILL.md"),
+      "---\nname: brainstorming\n---\n# Brainstorming\n",
+    );
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test("removes a provider symlink pointing into the library", async () => {
+    const symlinkPath = join(targetDir, "brainstorming");
+    await symlink(libraryPath, symlinkPath, "dir");
+    const target = await realpath(libraryPath);
+
+    const result = await deactivateLibrarySkill({
+      targetDir,
+      activationName: "brainstorming",
+      librarySkillsDir,
+      provider: "codex",
+      scope: "project",
+    });
+
+    expect(result).toEqual({
+      name: "brainstorming",
+      provider: "codex",
+      scope: "project",
+      path: symlinkPath,
+      target,
+    });
+    await expect(lstat(symlinkPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(libraryPath, "SKILL.md"), "utf-8")).resolves.toContain(
+      "# Brainstorming",
+    );
+  });
+
+  test("removes a provider symlink with a relative target into the library", async () => {
+    const symlinkPath = join(targetDir, "brainstorming");
+    const relativeTarget = relative(targetDir, libraryPath);
+    await symlink(relativeTarget, symlinkPath, "dir");
+    const target = await realpath(libraryPath);
+
+    const result = await deactivateLibrarySkill({
+      targetDir,
+      activationName: "brainstorming",
+      librarySkillsDir,
+      provider: "codex",
+      scope: "project",
+    });
+
+    expect(result).toEqual({
+      name: "brainstorming",
+      provider: "codex",
+      scope: "project",
+      path: symlinkPath,
+      target,
+    });
+    await expect(lstat(symlinkPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(libraryPath, "SKILL.md"), "utf-8")).resolves.toContain(
+      "# Brainstorming",
+    );
+  });
+
+  test("removes a broken relative symlink that lexically points into the library", async () => {
+    const symlinkPath = join(targetDir, "brainstorming");
+    const relativeTarget = relative(targetDir, libraryPath);
+    const expectedTarget = resolve(targetDir, relativeTarget);
+    await symlink(relativeTarget, symlinkPath, "dir");
+    await rm(libraryPath, { recursive: true, force: true });
+
+    const result = await deactivateLibrarySkill({
+      targetDir,
+      activationName: "brainstorming",
+      librarySkillsDir,
+      provider: "codex",
+      scope: "project",
+    });
+
+    expect(result).toEqual({
+      name: "brainstorming",
+      provider: "codex",
+      scope: "project",
+      path: symlinkPath,
+      target: expectedTarget,
+    });
+    await expect(lstat(symlinkPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("removes a symlink into the library when the library dir was deleted", async () => {
+    const symlinkPath = join(targetDir, "brainstorming");
+    const expectedTarget = libraryPath;
+    await symlink(libraryPath, symlinkPath, "dir");
+    await rm(join(tempDir, "library"), { recursive: true, force: true });
+
+    const result = await deactivateLibrarySkill({
+      targetDir,
+      activationName: "brainstorming",
+      librarySkillsDir,
+      provider: "codex",
+      scope: "project",
+    });
+
+    expect(result).toEqual({
+      name: "brainstorming",
+      provider: "codex",
+      scope: "project",
+      path: symlinkPath,
+      target: expectedTarget,
+    });
+    await expect(lstat(symlinkPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("refuses a broken symlink that lexically points outside the library", async () => {
+    const externalDir = join(tempDir, "external");
+    const symlinkPath = join(targetDir, "brainstorming");
+    const relativeTarget = relative(targetDir, externalDir);
+    await mkdir(externalDir, { recursive: true });
+    await symlink(relativeTarget, symlinkPath, "dir");
+    await rm(externalDir, { recursive: true, force: true });
+
+    await expect(
+      deactivateLibrarySkill({
+        targetDir,
+        activationName: "brainstorming",
+        librarySkillsDir,
+        provider: "codex",
+        scope: "project",
+      }),
+    ).rejects.toThrow(
+      `Refusing to deactivate symlink outside the ASM library: ${symlinkPath}.`,
+    );
+    await expect(readlink(symlinkPath)).resolves.toBe(relativeTarget);
+  });
+
+  test("refuses to deactivate a real directory", async () => {
+    const realTarget = join(targetDir, "brainstorming");
+    await mkdir(realTarget, { recursive: true });
+
+    await expect(
+      deactivateLibrarySkill({
+        targetDir,
+        activationName: "brainstorming",
+        librarySkillsDir,
+        provider: "codex",
+        scope: "project",
+      }),
+    ).rejects.toThrow(`Refusing to deactivate non-symlink target: ${realTarget}.`);
+    await expect(lstat(realTarget)).resolves.toBeTruthy();
+  });
+
+  test("refuses to deactivate a symlink outside the library", async () => {
+    const externalDir = join(tempDir, "external");
+    const symlinkPath = join(targetDir, "brainstorming");
+    await mkdir(externalDir, { recursive: true });
+    await symlink(externalDir, symlinkPath, "dir");
+
+    await expect(
+      deactivateLibrarySkill({
+        targetDir,
+        activationName: "brainstorming",
+        librarySkillsDir,
+        provider: "codex",
+        scope: "project",
+      }),
+    ).rejects.toThrow(
+      `Refusing to deactivate symlink outside the ASM library: ${symlinkPath}.`,
+    );
+    await expect(readlink(symlinkPath)).resolves.toBe(externalDir);
+  });
+
+  test("reports a missing activation", async () => {
+    await expect(
+      deactivateLibrarySkill({
+        targetDir,
+        activationName: "brainstorming",
+        librarySkillsDir,
+        provider: "codex",
+        scope: "project",
+      }),
+    ).rejects.toThrow('Skill "brainstorming" is not active for codex/project.');
+  });
+
+  test("rejects invalid activation names before touching filesystem targets", async () => {
+    const outsideDir = join(tempDir, "provider", "outside");
+    const outsideSentinel = join(outsideDir, "sentinel.txt");
+    await mkdir(outsideDir, { recursive: true });
+    await writeFile(outsideSentinel, "keep me", "utf-8");
+
+    await expect(
+      deactivateLibrarySkill({
+        targetDir,
+        activationName: "../outside",
+        librarySkillsDir,
+        provider: "codex",
+        scope: "project",
+      }),
+    ).rejects.toThrow(/Invalid skill name/);
+
+    await expect(readFile(outsideSentinel, "utf-8")).resolves.toBe("keep me");
   });
 });
