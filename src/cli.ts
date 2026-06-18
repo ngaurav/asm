@@ -171,7 +171,7 @@ import { VERSION_STRING } from "./utils/version";
 import { buildShadowingReport } from "./utils/path-shadowing";
 import { parseEditorCommand } from "./utils/editor";
 import { setVerbose } from "./logger";
-import { join as joinPath, resolve } from "path";
+import { join as joinPath, resolve, relative as relativePath } from "path";
 import type {
   Scope,
   SortBy,
@@ -2985,6 +2985,12 @@ async function cmdInstall(args: ParsedArgs) {
             ref: source.ref || "main",
             installedAt: new Date().toISOString(),
             provider: inspection.plan.providerName,
+            scope: inspection.plan.scope,
+            skillPath: relativePath(
+              inspection.plan.tempDir,
+              inspection.plan.sourceDir,
+            ),
+            targetDir: inspection.plan.targetDir,
             sourceType,
             ...(resolutionSource === "registry"
               ? { registryName: result.name }
