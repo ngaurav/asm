@@ -1,9 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
   emptyLibraryLock,
+  installLibrarySkill,
   readLibraryLock,
   writeLibraryLock,
 } from "./library";
@@ -59,5 +60,141 @@ describe("library lock", () => {
     await expect(readFile(lockPath + ".bak", "utf-8")).resolves.toBe(
       invalidLock,
     );
+  });
+});
+
+describe("installLibrarySkill", () => {
+  let tempDir: string;
+  let lockPath: string;
+  let skillsDir: string;
+  let sourceDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "asm-library-install-"));
+    lockPath = join(tempDir, "library-lock.json");
+    skillsDir = join(tempDir, "skills");
+    sourceDir = join(tempDir, "source", "skills", "brainstorming");
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(
+      join(sourceDir, "SKILL.md"),
+      "---\nname: brainstorming\nversion: 1.0.0\n---\n# Body\n",
+    );
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test("copies a skill directory and writes source metadata", async () => {
+    await writeFile(
+      join(sourceDir, "SKILL.md"),
+      "---\nname: brainstorming\nversion: 1.2.3\n---\n# Brainstorming\n",
+    );
+
+    const result = await installLibrarySkill(
+      {
+        sourceDir,
+        libraryName: "brainstorming",
+        source: "github:obra/superpowers",
+        sourceType: "github",
+        commitHash: "abc123",
+        ref: "main",
+        skillPath: "skills/brainstorming",
+        force: false,
+      },
+      { skillsDir, lockPath },
+    );
+
+    expect(result.name).toBe("brainstorming");
+    expect(result.version).toBe("1.2.3");
+    expect(
+      await readFile(join(result.libraryPath, "SKILL.md"), "utf-8"),
+    ).toContain("Brainstorming");
+
+    const lock = await readLibraryLock(lockPath);
+    expect(lock.skills.brainstorming).toMatchObject({
+      name: "brainstorming",
+      version: "1.2.3",
+      source: "github:obra/superpowers",
+      sourceType: "github",
+      commitHash: "abc123",
+      ref: "main",
+      skillPath: "skills/brainstorming",
+      libraryPath: result.libraryPath,
+    });
+  });
+
+  test("refuses to overwrite an existing library skill without force", async () => {
+    await installLibrarySkill(
+      {
+        sourceDir,
+        libraryName: "brainstorming",
+        source: "local:/tmp/source",
+        sourceType: "local",
+        commitHash: "unknown",
+        ref: null,
+        skillPath: "skills/brainstorming",
+        force: false,
+      },
+      { skillsDir, lockPath },
+    );
+
+    await expect(
+      installLibrarySkill(
+        {
+          sourceDir,
+          libraryName: "brainstorming",
+          source: "local:/tmp/source",
+          sourceType: "local",
+          commitHash: "unknown",
+          ref: null,
+          skillPath: "skills/brainstorming",
+          force: false,
+        },
+        { skillsDir, lockPath },
+      ),
+    ).rejects.toThrow(/already exists/);
+
+    await expect(lstat(join(skillsDir, "brainstorming"))).resolves.toBeTruthy();
+  });
+
+  test("rejects invalid library names before touching filesystem targets", async () => {
+    const outsideDir = join(tempDir, "outside");
+    const outsideSentinel = join(outsideDir, "sentinel.txt");
+    await mkdir(outsideDir, { recursive: true });
+    await writeFile(outsideSentinel, "keep me", "utf-8");
+
+    for (const libraryName of [
+      "",
+      "../outside",
+      "nested/name",
+      "nested\\name",
+      "bad\0name",
+    ]) {
+      await expect(
+        installLibrarySkill(
+          {
+            sourceDir,
+            libraryName,
+            source: "local:/tmp/source",
+            sourceType: "local",
+            commitHash: "unknown",
+            ref: null,
+            skillPath: "skills/brainstorming",
+            force: true,
+          },
+          { skillsDir, lockPath },
+        ),
+      ).rejects.toThrow(/Invalid skill name/);
+    }
+
+    await expect(readFile(outsideSentinel, "utf-8")).resolves.toBe("keep me");
+    await expect(lstat(join(skillsDir, "nested"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(readLibraryLock(lockPath)).resolves.toEqual({
+      version: 1,
+      skills: {},
+    });
   });
 });
