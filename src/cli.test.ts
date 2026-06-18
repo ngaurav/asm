@@ -21,6 +21,7 @@ import {
   lstat,
   readlink,
   symlink,
+  chmod,
 } from "fs/promises";
 import { tmpdir, homedir } from "os";
 import { spawnCollect, runInlineTs } from "./utils/test-spawn";
@@ -1122,6 +1123,13 @@ describe("parseArgs: install", () => {
     expect(result.subcommand).toBe("github:user/repo");
   });
 
+  test("parses install --library", () => {
+    const result = parse("install", "github:user/repo", "--library");
+    expect(result.command).toBe("install");
+    expect(result.subcommand).toBe("github:user/repo");
+    expect(result.flags.library).toBe(true);
+  });
+
   test("parses --provider flag", () => {
     const result = parse("install", "github:user/repo", "--provider", "claude");
     expect(result.flags.provider).toBe("claude");
@@ -1345,6 +1353,280 @@ describe("CLI integration: install", () => {
   test("main --help includes install command", async () => {
     const { stdout } = await runCLI("--help");
     expect(stdout).toContain("install");
+  });
+});
+
+// ─── CLI integration: install --library ─────────────────────────────────────
+
+describe("CLI integration: install --library", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "asm-test-install-library-"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test("installs selected local skills into the neutral library", async () => {
+    const sourceDir = join(tempDir, "source");
+    await mkdir(join(sourceDir, "one"), { recursive: true });
+    await mkdir(join(sourceDir, "two"), { recursive: true });
+    await writeFile(
+      join(sourceDir, "one", "SKILL.md"),
+      `---\nname: one\nversion: 1.0.0\n---\n# One\n`,
+    );
+    await writeFile(
+      join(sourceDir, "two", "SKILL.md"),
+      `---\nname: two\nversion: 1.0.0\n---\n# Two\n`,
+    );
+
+    const homeDir = join(tempDir, "home");
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        sourceDir,
+        "--library",
+        "--all",
+        "-y",
+        "--json",
+      ],
+      {
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(0);
+    const jsonStart = res.stdout.lastIndexOf("[\n  {");
+    expect(jsonStart).toBeGreaterThanOrEqual(0);
+    const payload = JSON.parse(res.stdout.slice(jsonStart).trim());
+    expect(payload.map((r: { name: string }) => r.name).sort()).toEqual([
+      "one",
+      "two",
+    ]);
+
+    const librarySkillsDir = join(
+      homeDir,
+      ".config",
+      "agent-skill-manager",
+      "library",
+      "skills",
+    );
+    await expect(
+      readFile(join(librarySkillsDir, "one", "SKILL.md"), "utf-8"),
+    ).resolves.toContain("# One");
+    await expect(
+      readFile(join(librarySkillsDir, "two", "SKILL.md"), "utf-8"),
+    ).resolves.toContain("# Two");
+    await expect(
+      readFile(
+        join(
+          homeDir,
+          ".config",
+          "agent-skill-manager",
+          "library",
+          "library-lock.json",
+        ),
+        "utf-8",
+      ),
+    ).resolves.toContain('"one"');
+    await expect(
+      lstat(join(homeDir, ".claude", "skills", "one")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("does not overwrite an existing library skill when only provider install exists", async () => {
+    const homeDir = join(tempDir, "home");
+    const providerSkillDir = join(homeDir, ".claude", "skills", "foo");
+    await mkdir(providerSkillDir, { recursive: true });
+    await writeFile(
+      join(providerSkillDir, "SKILL.md"),
+      `---\nname: foo\nversion: 1.0.0\n---\n# Existing provider\n`,
+    );
+
+    const librarySkillDir = join(
+      homeDir,
+      ".config",
+      "agent-skill-manager",
+      "library",
+      "skills",
+      "foo",
+    );
+    await mkdir(librarySkillDir, { recursive: true });
+    await writeFile(
+      join(librarySkillDir, "SKILL.md"),
+      `---\nname: foo\nversion: 1.0.0\n---\n# Existing library\n`,
+    );
+    await mkdir(
+      join(homeDir, ".config", "agent-skill-manager", "library"),
+      { recursive: true },
+    );
+    await writeFile(
+      join(
+        homeDir,
+        ".config",
+        "agent-skill-manager",
+        "library",
+        "library-lock.json",
+      ),
+      JSON.stringify(
+        {
+          version: 1,
+          skills: {
+            foo: {
+              name: "foo",
+              version: "1.0.0",
+              source: "local:/existing",
+              sourceType: "local",
+              commitHash: "unknown",
+              ref: "main",
+              skillPath: "foo",
+              libraryPath: librarySkillDir,
+              installedAt: "2026-01-01T00:00:00.000Z",
+            },
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+
+    const sourceSkillDir = join(tempDir, "source", "foo");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      `---\nname: foo\nversion: 2.0.0\n---\n# New source\n`,
+    );
+
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        sourceSkillDir,
+        "--library",
+        "-y",
+        "--json",
+      ],
+      {
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).not.toBe(0);
+    expect(`${res.stdout}\n${res.stderr}`).toMatch(
+      /Library skill already exists|--force/,
+    );
+    const librarySkillMd = await readFile(
+      join(librarySkillDir, "SKILL.md"),
+      "utf-8",
+    );
+    expect(librarySkillMd).toContain("# Existing library");
+    expect(librarySkillMd).not.toContain("# New source");
+  });
+
+  test("does not let Vercel method implicit force overwrite an existing library skill", async () => {
+    const homeDir = join(tempDir, "home");
+    const providerSkillDir = join(homeDir, ".claude", "skills", "foo");
+    await mkdir(providerSkillDir, { recursive: true });
+    await writeFile(
+      join(providerSkillDir, "SKILL.md"),
+      `---\nname: foo\nversion: 1.0.0\n---\n# Existing provider\n`,
+    );
+
+    const librarySkillDir = join(
+      homeDir,
+      ".config",
+      "agent-skill-manager",
+      "library",
+      "skills",
+      "foo",
+    );
+    await mkdir(librarySkillDir, { recursive: true });
+    await writeFile(
+      join(librarySkillDir, "SKILL.md"),
+      `---\nname: foo\nversion: 1.0.0\n---\n# Existing library\n`,
+    );
+    await mkdir(
+      join(homeDir, ".config", "agent-skill-manager", "library"),
+      { recursive: true },
+    );
+    await writeFile(
+      join(
+        homeDir,
+        ".config",
+        "agent-skill-manager",
+        "library",
+        "library-lock.json",
+      ),
+      JSON.stringify({ version: 1, skills: {} }, null, 2) + "\n",
+    );
+
+    const sourceSkillDir = join(tempDir, "source-vercel", "foo");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      `---\nname: foo\nversion: 2.0.0\n---\n# New source\n`,
+    );
+
+    const fakeBinDir = join(tempDir, "fake-bin");
+    await mkdir(fakeBinDir, { recursive: true });
+    const fakeNpx = join(fakeBinDir, "npx");
+    await writeFile(
+      fakeNpx,
+      `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "10.0.0"
+  exit 0
+fi
+echo "fake skills add"
+exit 0
+`,
+    );
+    await chmod(fakeNpx, 0o755);
+
+    const res = await spawnCollect(
+      [
+        process.env.npm_node_execpath || process.execPath,
+        "--import",
+        "tsx",
+        CLI_BIN,
+        "install",
+        sourceSkillDir,
+        "--library",
+        "--method",
+        "vercel",
+        "-y",
+        "--json",
+      ],
+      {
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          NO_COLOR: "1",
+          PATH: `${fakeBinDir}:${process.env.PATH}`,
+        },
+      },
+    );
+
+    expect(
+      res.exitCode,
+      `stdout:\n${res.stdout}\nstderr:\n${res.stderr}`,
+    ).not.toBe(0);
+    expect(`${res.stdout}\n${res.stderr}`).toMatch(
+      /Library skill already exists|--force/,
+    );
+    const librarySkillMd = await readFile(
+      join(librarySkillDir, "SKILL.md"),
+      "utf-8",
+    );
+    expect(librarySkillMd).toContain("# Existing library");
+    expect(librarySkillMd).not.toContain("# New source");
   });
 });
 

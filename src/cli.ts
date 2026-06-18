@@ -2,6 +2,7 @@ import {
   loadConfig,
   getConfigPath,
   getDefaultConfig,
+  getLibrarySkillsDir,
   saveConfig,
   resolveProviderPath,
 } from "./config";
@@ -170,6 +171,7 @@ import type { SearchFilters } from "./skill-index";
 import { VERSION_STRING } from "./utils/version";
 import { buildShadowingReport } from "./utils/path-shadowing";
 import { parseEditorCommand } from "./utils/editor";
+import { installLibrarySkill } from "./library";
 import { setVerbose } from "./logger";
 import { join as joinPath, resolve, relative as relativePath } from "path";
 import type {
@@ -244,6 +246,7 @@ interface ParsedArgs {
     force: boolean;
     path: string | null;
     all: boolean;
+    library: boolean;
     verbose: boolean;
     flat: boolean;
     transport: TransportMode;
@@ -316,6 +319,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       force: false,
       path: null,
       all: false,
+      library: false,
       verbose: false,
       flat: false,
       transport: "auto",
@@ -398,6 +402,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
       result.flags.path = args[i] || null;
     } else if (arg === "--all") {
       result.flags.all = true;
+    } else if (arg === "--library") {
+      result.flags.library = true;
     } else if (arg === "--verbose" || arg === "-V") {
       result.flags.verbose = true;
     } else if (arg === "--flat") {
@@ -2081,6 +2087,7 @@ ${ansi.bold("Options:")}
   --path <subdir>        Install skill from a subdirectory of the repo
   --skill <name>         Alias for --path (Vercel skills CLI compatibility)
   --all                  Install all skills found in the repo
+  --library              Install into asm's neutral local library
   -m, --method <method>  Install method: default or vercel (default: default)
                          vercel delegates to npx skills add for tracking
   -t, --transport <mode> Transport: https, ssh, or auto (default: auto)
@@ -2104,6 +2111,7 @@ ${ansi.bold("Local folder:")}
   asm install ~/skills/my-skill            ${ansi.dim("(home-relative path)")}
   asm install ../other-project/skill       ${ansi.dim("(parent-relative path)")}
   asm install ./skills-dir --all           ${ansi.dim("(all skills in directory)")}
+  asm install ./skills-dir --library --all -y ${ansi.dim("(install to local library)")}
 
 ${ansi.bold("Single-skill repo:")}
   asm install github:user/my-skill
@@ -2333,6 +2341,54 @@ async function executeSkillInstall(
   return await executeInstall(plan);
 }
 
+async function installSelectedLibrarySkill(input: {
+  inspection: SkillInspection;
+  source: ReturnType<typeof parseSource>;
+  isLocal: boolean;
+  resolutionSource: ResolutionSource;
+  commitHash: string | null;
+  scanBaseDir: string;
+  force: boolean;
+}): Promise<InstallResult> {
+  const {
+    inspection,
+    source,
+    isLocal,
+    resolutionSource,
+    commitHash,
+    scanBaseDir,
+    force,
+  } = input;
+  const sourceStr = isLocal
+    ? `local:${source.localPath}`
+    : `github:${source.owner}/${source.repo}`;
+  const sourceType = isLocal
+    ? ("local" as const)
+    : resolutionSource === "registry"
+      ? ("registry" as const)
+      : ("github" as const);
+  const skillPath = relativePath(scanBaseDir, inspection.plan.sourceDir);
+  const installed = await installLibrarySkill({
+    sourceDir: inspection.plan.sourceDir,
+    libraryName: inspection.skillName,
+    source: sourceStr,
+    sourceType,
+    commitHash: commitHash || "unknown",
+    ref: source.ref || "main",
+    skillPath,
+    force,
+  });
+
+  return {
+    success: true,
+    path: installed.libraryPath,
+    name: installed.name,
+    version: installed.version,
+    provider: "Library",
+    source: sourceStr,
+  };
+}
+
 async function cmdInstall(args: ParsedArgs) {
   if (args.flags.help) {
     printInstallHelp();
@@ -2344,6 +2400,7 @@ async function cmdInstall(args: ParsedArgs) {
     : undefined;
 
   const startTime = performance.now();
+  const explicitForce = args.flags.force;
   let sourceStr = args.subcommand;
   if (!sourceStr) {
     error("Missing required argument: <source>");
@@ -2543,54 +2600,70 @@ async function cmdInstall(args: ParsedArgs) {
     }
 
     // Step 2: Select provider (before cloning — no wasted time if user cancels)
-    console.info(stepHeader("Selecting provider"));
     const config = await loadConfig();
-    const { provider, allProviders } = await resolveProvider(
-      config,
-      args.flags.provider,
-      !!process.stdin.isTTY,
-    );
+    let provider: ProviderConfig;
+    let allProviders: ProviderConfig[] | null = null;
+    let installScope: "global" | "project" = "global";
 
-    // Step 3: Select scope (global or project)
-    console.info(stepHeader("Selecting scope"));
-    let installScope: "global" | "project";
-
-    if (args.flags.scope === "global" || args.flags.scope === "project") {
-      // Explicit --scope flag provided
-      installScope = args.flags.scope;
-      console.info(
-        `  ${ansi.dim(`scope: ${installScope}`)}${installScope === "global" ? ` (${provider.global})` : ` (${provider.project})`}`,
-      );
-    } else if (!process.stdin.isTTY || args.flags.yes) {
-      // Non-interactive mode: default to global
-      installScope = "global";
-      console.info(
-        `  ${ansi.dim(`scope: global (default)`)} (${provider.global})`,
-      );
-    } else {
-      // Interactive: prompt user to choose
-      const scopeItems = [
-        {
-          label: `Global (${provider.global})`,
-          hint: "Available in all projects",
-          checked: true,
-        },
-        {
-          label: `Project (${provider.project})`,
-          hint: "Available only in this project",
-          checked: false,
-        },
-      ];
-      console.info(""); // blank line before picker
-      const scopeIndices = await checkboxPicker({ items: scopeItems });
-      if (scopeIndices.length === 0) {
-        throw new Error("No scope selected. Aborting.");
+    if (args.flags.library) {
+      console.info(stepHeader("Selecting library"));
+      const inspectionProvider =
+        config.providers.find((p) => p.enabled) ?? config.providers[0];
+      if (!inspectionProvider) {
+        throw new Error("No providers configured.");
       }
-      // Use the first selected scope (single-select behavior)
-      installScope = scopeIndices[0] === 0 ? "global" : "project";
-      console.info(
-        `  Selected: ${ansi.bold(installScope)} ${ansi.dim(`(${installScope === "global" ? provider.global : provider.project})`)}`,
+      provider = inspectionProvider;
+      console.info(`  ${ansi.dim(`library: ${getLibrarySkillsDir()}`)}`);
+    } else {
+      console.info(stepHeader("Selecting provider"));
+      const resolved = await resolveProvider(
+        config,
+        args.flags.provider,
+        !!process.stdin.isTTY,
       );
+      provider = resolved.provider;
+      allProviders = resolved.allProviders;
+
+      // Step 3: Select scope (global or project)
+      console.info(stepHeader("Selecting scope"));
+
+      if (args.flags.scope === "global" || args.flags.scope === "project") {
+        // Explicit --scope flag provided
+        installScope = args.flags.scope;
+        console.info(
+          `  ${ansi.dim(`scope: ${installScope}`)}${installScope === "global" ? ` (${provider.global})` : ` (${provider.project})`}`,
+        );
+      } else if (!process.stdin.isTTY || args.flags.yes) {
+        // Non-interactive mode: default to global
+        installScope = "global";
+        console.info(
+          `  ${ansi.dim(`scope: global (default)`)} (${provider.global})`,
+        );
+      } else {
+        // Interactive: prompt user to choose
+        const scopeItems = [
+          {
+            label: `Global (${provider.global})`,
+            hint: "Available in all projects",
+            checked: true,
+          },
+          {
+            label: `Project (${provider.project})`,
+            hint: "Available only in this project",
+            checked: false,
+          },
+        ];
+        console.info(""); // blank line before picker
+        const scopeIndices = await checkboxPicker({ items: scopeItems });
+        if (scopeIndices.length === 0) {
+          throw new Error("No scope selected. Aborting.");
+        }
+        // Use the first selected scope (single-select behavior)
+        installScope = scopeIndices[0] === 0 ? "global" : "project";
+        console.info(
+          `  Selected: ${ansi.bold(installScope)} ${ansi.dim(`(${installScope === "global" ? provider.global : provider.project})`)}`,
+        );
+      }
     }
 
     // Step 4: Clone repository (or read local source)
@@ -2963,41 +3036,53 @@ async function cmdInstall(args: ParsedArgs) {
         console.info(
           `${progress}Installing ${ansi.bold(inspection.metadata.name)}...`,
         );
-        const result = await executeSkillInstall(inspection.plan, allProviders);
+        const result = args.flags.library
+          ? await installSelectedLibrarySkill({
+              inspection,
+              source,
+              isLocal,
+              resolutionSource,
+              commitHash,
+              scanBaseDir,
+              force: explicitForce,
+            })
+          : await executeSkillInstall(inspection.plan, allProviders);
         results.push(result);
         console.info(
-          `${progress}${ansi.green("✓")} ${inspection.metadata.name} installed to ${ansi.dim(inspection.plan.targetDir)}`,
+          `${progress}${ansi.green("✓")} ${inspection.metadata.name} installed to ${ansi.dim(result.path)}`,
         );
 
         // Write lock entry for tracking
-        try {
-          const sourceStr = isLocal
-            ? `local:${source.localPath}`
-            : `github:${source.owner}/${source.repo}`;
-          const sourceType = isLocal
-            ? ("local" as const)
-            : resolutionSource === "registry"
-              ? ("registry" as const)
-              : ("github" as const);
-          await writeLockEntry(result.name, {
-            source: sourceStr,
-            commitHash: commitHash || "unknown",
-            ref: source.ref || "main",
-            installedAt: new Date().toISOString(),
-            provider: inspection.plan.providerName,
-            scope: inspection.plan.scope,
-            skillPath: relativePath(
-              inspection.plan.tempDir,
-              inspection.plan.sourceDir,
-            ),
-            targetDir: inspection.plan.targetDir,
-            sourceType,
-            ...(resolutionSource === "registry"
-              ? { registryName: result.name }
-              : {}),
-          });
-        } catch {
-          // Lock write failure is non-fatal
+        if (!args.flags.library) {
+          try {
+            const sourceStr = isLocal
+              ? `local:${source.localPath}`
+              : `github:${source.owner}/${source.repo}`;
+            const sourceType = isLocal
+              ? ("local" as const)
+              : resolutionSource === "registry"
+                ? ("registry" as const)
+                : ("github" as const);
+            await writeLockEntry(result.name, {
+              source: sourceStr,
+              commitHash: commitHash || "unknown",
+              ref: source.ref || "main",
+              installedAt: new Date().toISOString(),
+              provider: inspection.plan.providerName,
+              scope: inspection.plan.scope,
+              skillPath: relativePath(
+                inspection.plan.tempDir,
+                inspection.plan.sourceDir,
+              ),
+              targetDir: inspection.plan.targetDir,
+              sourceType,
+              ...(resolutionSource === "registry"
+                ? { registryName: result.name }
+                : {}),
+            });
+          } catch {
+            // Lock write failure is non-fatal
+          }
         }
       } catch (installErr: any) {
         failures.push({
@@ -3021,6 +3106,9 @@ async function cmdInstall(args: ParsedArgs) {
       );
       for (const f of failures) {
         console.error(`  ${ansi.red("✗")} ${f.name}: ${f.error}`);
+      }
+      if (args.flags.library) {
+        process.exitCode = 1;
       }
     }
 

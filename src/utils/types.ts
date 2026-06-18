@@ -338,6 +338,7 @@ export interface InstallOptions {
   yes: boolean;
   path: string | null;
   all: boolean;
+  library: boolean;
   transport: TransportMode;
   method: InstallMethod;
 }
