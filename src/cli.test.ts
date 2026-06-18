@@ -1504,6 +1504,136 @@ describe("CLI integration: install --library", () => {
     });
   });
 
+  test("library update refreshes a local-source skill and outputs JSON summary", async () => {
+    const source = join(tempDir, "source");
+    const sourceSkillDir = join(source, "skills", "brainstorming");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      "---\nname: brainstorming\nversion: 1.0.0\n---\n# Old\n",
+    );
+
+    const homeDir = join(tempDir, "home");
+    const installRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        source,
+        "--library",
+        "--all",
+        "-y",
+        "--json",
+      ],
+      { env: { ...process.env, HOME: homeDir, NO_COLOR: "1" } },
+    );
+    expect(installRes.exitCode).toBe(0);
+
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      "---\nname: brainstorming\nversion: 2.0.0\n---\n# New\n",
+    );
+
+    const updateRes = await spawnCollect(
+      ["npx", "tsx", CLI_BIN, "library", "update", "brainstorming", "--json"],
+      { env: { ...process.env, HOME: homeDir, NO_COLOR: "1" } },
+    );
+
+    expect(updateRes.exitCode).toBe(0);
+    const payload = JSON.parse(updateRes.stdout);
+    expect(payload.results[0]).toMatchObject({
+      name: "brainstorming",
+      status: "updated",
+      oldVersion: "1.0.0",
+      newVersion: "2.0.0",
+    });
+    await expect(
+      readFile(
+        join(
+          homeDir,
+          ".config",
+          "agent-skill-manager",
+          "library",
+          "skills",
+          "brainstorming",
+          "SKILL.md",
+        ),
+        "utf-8",
+      ),
+    ).resolves.toContain("# New");
+  });
+
+  test("library update unknown skill suggests library list and exits 1 with JSON summary", async () => {
+    const homeDir = join(tempDir, "home");
+    const res = await spawnCollect(
+      ["npx", "tsx", CLI_BIN, "library", "update", "missing", "--json"],
+      { env: { ...process.env, HOME: homeDir, NO_COLOR: "1" } },
+    );
+
+    expect(res.exitCode).toBe(1);
+    const payload = JSON.parse(res.stdout);
+    expect(payload.failedCount).toBe(1);
+    expect(payload.results[0]).toMatchObject({
+      name: "missing",
+      status: "failed",
+      reason: 'Library skill "missing" not found. Run "asm library list".',
+    });
+  });
+
+  test("library update --all --json reports partial failures with counts", async () => {
+    const source = join(tempDir, "source");
+    await mkdir(join(source, "skills", "good"), { recursive: true });
+    await mkdir(join(source, "skills", "bad"), { recursive: true });
+    await writeFile(
+      join(source, "skills", "good", "SKILL.md"),
+      "---\nname: good\nversion: 1.0.0\n---\n# Good Old\n",
+    );
+    await writeFile(
+      join(source, "skills", "bad", "SKILL.md"),
+      "---\nname: bad\nversion: 1.0.0\n---\n# Bad Old\n",
+    );
+
+    const homeDir = join(tempDir, "home");
+    const installRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        source,
+        "--library",
+        "--all",
+        "-y",
+        "--json",
+      ],
+      { env: { ...process.env, HOME: homeDir, NO_COLOR: "1" } },
+    );
+    expect(installRes.exitCode).toBe(0);
+
+    await writeFile(
+      join(source, "skills", "good", "SKILL.md"),
+      "---\nname: good\nversion: 2.0.0\n---\n# Good New\n",
+    );
+    await rm(join(source, "skills", "bad", "SKILL.md"), { force: true });
+
+    const updateRes = await spawnCollect(
+      ["npx", "tsx", CLI_BIN, "library", "update", "--all", "--json"],
+      { env: { ...process.env, HOME: homeDir, NO_COLOR: "1" } },
+    );
+
+    expect(updateRes.exitCode).toBe(1);
+    const payload = JSON.parse(updateRes.stdout);
+    expect(payload.updatedCount).toBe(1);
+    expect(payload.failedCount).toBe(1);
+    expect(payload.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "good", status: "updated" }),
+        expect.objectContaining({ name: "bad", status: "failed" }),
+      ]),
+    );
+  });
+
   test("activate links a library skill into a project provider", async () => {
     const source = join(tempDir, "source");
     const sourceSkillDir = join(source, "skills", "brainstorming");

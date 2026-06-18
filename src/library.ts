@@ -503,6 +503,36 @@ export async function updateLibrarySkill(
   };
 }
 
+export async function updateLibrarySkills(
+  names: string[] | null,
+  paths: LibraryPaths = {},
+): Promise<LibraryUpdateSummary> {
+  const lockPath = paths.lockPath ?? getLibraryLockPath();
+  const lock = await readLibraryLock(lockPath);
+  const selectedNames = names === null ? Object.keys(lock.skills) : names;
+  const warnings: string[] = [];
+  const results: LibraryUpdateResult[] = [];
+
+  for (const selectedName of selectedNames) {
+    const result = await updateLibrarySkill(selectedName, paths);
+    if (
+      result.status === "failed" &&
+      result.reason?.includes('Run "asm library list"')
+    ) {
+      warnings.push(result.reason);
+    }
+    results.push(result);
+  }
+
+  return {
+    results,
+    updatedCount: results.filter((result) => result.status === "updated").length,
+    skippedCount: results.filter((result) => result.status === "skipped").length,
+    failedCount: results.filter((result) => result.status === "failed").length,
+    warnings,
+  };
+}
+
 export interface DeactivateLibrarySkillInput {
   targetDir: string;
   activationName: string;
