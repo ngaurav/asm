@@ -14,12 +14,17 @@ import {
   symlink,
   writeFile,
 } from "fs/promises";
+import { execFile } from "child_process";
 import { createHash } from "crypto";
+import { promisify } from "util";
 import { dirname, isAbsolute, join, relative, resolve } from "path";
 import { getLibraryLockPath, getLibrarySkillsDir } from "./config";
 import { debug } from "./logger";
 import { parseFrontmatter, resolveVersion } from "./utils/frontmatter";
+import { sourceToCloneUrl } from "./updater";
 import type { LibraryLockFile, LibrarySkillEntry } from "./utils/types";
+
+const execFileAsync = promisify(execFile);
 
 const LIBRARY_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const MAX_LIBRARY_NAME_LENGTH = 128;
@@ -173,10 +178,6 @@ function librarySourceRoot(entry: LibrarySkillEntry): string | null {
   return resolve(basePath);
 }
 
-function hashSourceMarkdown(markdown: string): string {
-  return createHash("sha256").update(markdown).digest("hex");
-}
-
 function validateSourceSkillFrontmatter(
   frontmatter: Record<string, string>,
 ): { name: string; version: string } | { reason: string } {
@@ -270,6 +271,81 @@ async function hashDirectoryContents(dir: string): Promise<string> {
 
   await walk(dir, "");
   return hash.digest("hex");
+}
+
+async function cloneRemoteLibrarySource(
+  entry: LibrarySkillEntry,
+  dirName: string,
+  lockPath: string,
+): Promise<
+  | { tempDir: string; commitHash: string }
+  | { reason: string; tempDir?: string }
+> {
+  const cloneUrl = sourceToCloneUrl(entry.source);
+  if (!cloneUrl) {
+    return { reason: "Cannot determine remote URL" };
+  }
+
+  const tempParent = join(dirname(lockPath), ".tmp");
+  await mkdir(tempParent, { recursive: true });
+  const tempDir = await mkdtemp(join(tempParent, `${dirName}-`));
+  const ref = entry.ref && entry.ref !== "HEAD" ? entry.ref : null;
+  const isCommitSha = !!ref && /^[0-9a-f]{40}$/i.test(ref);
+  const cloneArgs = ["clone", "--depth", "1"];
+  if (ref && !isCommitSha) {
+    cloneArgs.push("--branch", ref);
+  }
+  cloneArgs.push(cloneUrl, tempDir);
+
+  try {
+    await execFileAsync("git", cloneArgs, { timeout: 60_000 });
+  } catch (err: any) {
+    return {
+      tempDir,
+      reason: `Clone failed: ${err?.stderr || err?.message || String(err)}`,
+    };
+  }
+
+  if (ref && isCommitSha) {
+    try {
+      await execFileAsync("git", ["checkout", ref], {
+        cwd: tempDir,
+        timeout: 30_000,
+      });
+    } catch {
+      try {
+        await execFileAsync("git", ["fetch", "--depth", "1", "origin", ref], {
+          cwd: tempDir,
+          timeout: 60_000,
+        });
+        await execFileAsync("git", ["checkout", "FETCH_HEAD"], {
+          cwd: tempDir,
+          timeout: 30_000,
+        });
+      } catch (err: any) {
+        return {
+          tempDir,
+          reason: `Checkout failed for ref ${ref}: ${
+            err?.stderr || err?.message || String(err)
+          }`,
+        };
+      }
+    }
+  }
+
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
+      cwd: tempDir,
+      timeout: 5_000,
+    });
+    const commitHash = stdout.trim();
+    if (!/^[0-9a-f]{40}$/i.test(commitHash)) {
+      return { tempDir, reason: "Could not read new commit" };
+    }
+    return { tempDir, commitHash };
+  } catch {
+    return { tempDir, reason: "Could not read new commit" };
+  }
 }
 
 async function replaceDirectoryAtomically(input: {
@@ -380,127 +456,158 @@ export async function updateLibrarySkill(
   if (!entry.sourceType || !entry.sourceType.trim()) {
     return libraryUpdateFailure(dirName, "Missing update metadata: sourceType");
   }
-  if (entry.sourceType !== "local") {
-    return libraryUpdateFailure(
-      dirName,
-      `Unsupported library source type for update: ${entry.sourceType}`,
-    );
-  }
-  if (!entry.skillPath || !entry.skillPath.trim()) {
+  if (entry.skillPath === undefined || entry.skillPath === null) {
     return libraryUpdateFailure(dirName, "Missing update metadata: skillPath");
   }
   if (!entry.libraryPath || !entry.libraryPath.trim()) {
     return libraryUpdateFailure(dirName, "Missing update metadata: libraryPath");
   }
 
-  const sourceRoot = librarySourceRoot(entry);
-  if (!sourceRoot) {
-    return libraryUpdateFailure(
-      dirName,
-      `Unsupported library source for update: ${entry.source}`,
-    );
-  }
-
-  const sourceDir = resolveContainedPath(sourceRoot, join(sourceRoot, entry.skillPath));
-  if (!sourceDir) {
-    return libraryUpdateFailure(
-      dirName,
-      "Invalid update metadata: skillPath escapes source root",
-    );
-  }
-
-  const sourceSkillPath = join(sourceDir, "SKILL.md");
-  let realSourceRoot: string;
-  let realSourceDir: string;
+  let cleanupSourceRoot: string | null = null;
   try {
-    [realSourceRoot, realSourceDir] = await Promise.all([
-      realpath(sourceRoot),
-      realpath(sourceDir),
-    ]);
-  } catch (err: any) {
-    return libraryUpdateFailure(
-      dirName,
-      `Unable to read source SKILL.md at ${sourceSkillPath}: ${
-        err?.message ?? String(err)
-      }`,
-    );
-  }
-  if (!isContainedPath(realSourceRoot, realSourceDir)) {
-    return libraryUpdateFailure(
-      dirName,
-      "Invalid update metadata: skillPath escapes source root",
-    );
-  }
+    let sourceRoot: string;
+    let nextCommitHash: string | null = null;
 
-  const libraryPath = resolveContainedPath(skillsDir, entry.libraryPath);
-  if (!libraryPath) {
-    return libraryUpdateFailure(
-      dirName,
-      "Invalid update metadata: libraryPath escapes library skills directory",
-    );
-  }
-  if (!(await libraryPathRealpathIsContained(skillsDir, libraryPath))) {
-    return libraryUpdateFailure(
-      dirName,
-      "Invalid update metadata: libraryPath escapes library skills directory",
-    );
-  }
+    if (entry.sourceType === "local") {
+      const localSourceRoot = librarySourceRoot(entry);
+      if (!localSourceRoot) {
+        return libraryUpdateFailure(
+          dirName,
+          `Unsupported library source for update: ${entry.source}`,
+        );
+      }
+      sourceRoot = localSourceRoot;
+    } else if (entry.sourceType === "github" || entry.sourceType === "registry") {
+      const cloneResult = await cloneRemoteLibrarySource(entry, dirName, lockPath);
+      if ("reason" in cloneResult) {
+        if (cloneResult.tempDir) {
+          cleanupSourceRoot = cloneResult.tempDir;
+        }
+        return libraryUpdateFailure(dirName, cloneResult.reason);
+      }
+      sourceRoot = cloneResult.tempDir;
+      cleanupSourceRoot = cloneResult.tempDir;
+      nextCommitHash = cloneResult.commitHash;
+    } else {
+      return libraryUpdateFailure(
+        dirName,
+        `Unsupported library source type for update: ${entry.sourceType}`,
+      );
+    }
 
-  let sourceMarkdown: string;
-  try {
-    sourceMarkdown = await readFile(sourceSkillPath, "utf-8");
-  } catch (err: any) {
-    return libraryUpdateFailure(
-      dirName,
-      `Unable to read source SKILL.md at ${sourceSkillPath}: ${
-        err?.message ?? String(err)
-      }`,
+    const sourceDir = resolveContainedPath(
+      sourceRoot,
+      join(sourceRoot, entry.skillPath),
     );
-  }
+    if (!sourceDir) {
+      return libraryUpdateFailure(
+        dirName,
+        "Invalid update metadata: skillPath escapes source root",
+      );
+    }
 
-  const frontmatter = parseFrontmatter(sourceMarkdown);
-  const sourceMetadata = validateSourceSkillFrontmatter(frontmatter);
-  if ("reason" in sourceMetadata) {
-    return libraryUpdateFailure(dirName, sourceMetadata.reason);
-  }
+    const sourceSkillPath = join(sourceDir, "SKILL.md");
+    let realSourceRoot: string;
+    let realSourceDir: string;
+    try {
+      [realSourceRoot, realSourceDir] = await Promise.all([
+        realpath(sourceRoot),
+        realpath(sourceDir),
+      ]);
+    } catch (err: any) {
+      return libraryUpdateFailure(
+        dirName,
+        `Unable to read source SKILL.md at ${sourceSkillPath}: ${
+          err?.message ?? String(err)
+        }`,
+      );
+    }
+    if (!isContainedPath(realSourceRoot, realSourceDir)) {
+      return libraryUpdateFailure(
+        dirName,
+        "Invalid update metadata: skillPath escapes source root",
+      );
+    }
 
-  const nameFromSource = sourceMetadata.name;
-  const versionFromSource = sourceMetadata.version;
-  const nextCommitHash = await hashDirectoryContents(sourceDir);
-  const updatedLock = {
-    ...lock,
-    skills: {
-      ...lock.skills,
-      [dirName]: {
-        ...entry,
-        name: nameFromSource,
-        version: versionFromSource,
-        commitHash: nextCommitHash,
-        installedAt: new Date().toISOString(),
+    const libraryPath = resolveContainedPath(skillsDir, entry.libraryPath);
+    if (!libraryPath) {
+      return libraryUpdateFailure(
+        dirName,
+        "Invalid update metadata: libraryPath escapes library skills directory",
+      );
+    }
+    if (!(await libraryPathRealpathIsContained(skillsDir, libraryPath))) {
+      return libraryUpdateFailure(
+        dirName,
+        "Invalid update metadata: libraryPath escapes library skills directory",
+      );
+    }
+
+    let sourceMarkdown: string;
+    try {
+      sourceMarkdown = await readFile(sourceSkillPath, "utf-8");
+    } catch (err: any) {
+      return libraryUpdateFailure(
+        dirName,
+        `Unable to read source SKILL.md at ${sourceSkillPath}: ${
+          err?.message ?? String(err)
+        }`,
+      );
+    }
+
+    const frontmatter = parseFrontmatter(sourceMarkdown);
+    const sourceMetadata = validateSourceSkillFrontmatter(frontmatter);
+    if ("reason" in sourceMetadata) {
+      return libraryUpdateFailure(dirName, sourceMetadata.reason);
+    }
+
+    const nameFromSource = sourceMetadata.name;
+    const versionFromSource = sourceMetadata.version;
+    if (entry.sourceType === "local") {
+      nextCommitHash = await hashDirectoryContents(sourceDir);
+    }
+    if (!nextCommitHash) {
+      return libraryUpdateFailure(dirName, "Could not read new commit");
+    }
+    const updatedLock = {
+      ...lock,
+      skills: {
+        ...lock.skills,
+        [dirName]: {
+          ...entry,
+          name: nameFromSource,
+          version: versionFromSource,
+          commitHash: nextCommitHash,
+          installedAt: new Date().toISOString(),
+        },
       },
-    },
-  };
+    };
 
-  const swapResult = await replaceDirectoryAtomically({
-    sourceDir,
-    targetDir: libraryPath,
-    writeLock: () => writeLibraryLockFn(updatedLock, lockPath),
-  });
-  if (swapResult) {
-    return libraryUpdateFailure(
-      dirName,
-      swapResult.reason ?? "Failed to update library skill",
-    );
+    const swapResult = await replaceDirectoryAtomically({
+      sourceDir,
+      targetDir: libraryPath,
+      writeLock: () => writeLibraryLockFn(updatedLock, lockPath),
+    });
+    if (swapResult) {
+      return libraryUpdateFailure(
+        dirName,
+        swapResult.reason ?? "Failed to update library skill",
+      );
+    }
+
+    return {
+      name: nameFromSource,
+      status: "updated",
+      oldVersion: entry.version,
+      newVersion: versionFromSource,
+      oldCommit: entry.commitHash,
+      newCommit: nextCommitHash,
+    };
+  } finally {
+    if (cleanupSourceRoot) {
+      await rm(cleanupSourceRoot, { recursive: true, force: true });
+    }
   }
-
-  return {
-    name: nameFromSource,
-    status: "updated",
-    oldVersion: entry.version,
-    newVersion: versionFromSource,
-    oldCommit: entry.commitHash,
-    newCommit: nextCommitHash,
-  };
 }
 
 export async function updateLibrarySkills(

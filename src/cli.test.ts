@@ -1564,6 +1564,80 @@ describe("CLI integration: install --library", () => {
     ).resolves.toContain("# New");
   });
 
+  test("install --library records a root skillPath that library update can refresh", async () => {
+    const sourceSkillDir = join(tempDir, "root-skill");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      "---\nname: root-skill\nversion: 1.0.0\n---\n# Old Root\n",
+    );
+
+    const homeDir = join(tempDir, "home-root-library");
+    const installRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        sourceSkillDir,
+        "--library",
+        "-y",
+        "--json",
+      ],
+      { env: { ...process.env, HOME: homeDir, NO_COLOR: "1" } },
+    );
+    expect(installRes.exitCode).toBe(0);
+    const lock = JSON.parse(
+      await readFile(
+        join(
+          homeDir,
+          ".config",
+          "agent-skill-manager",
+          "library",
+          "library-lock.json",
+        ),
+        "utf-8",
+      ),
+    );
+    expect(lock.skills["root-skill"]).toMatchObject({
+      name: "root-skill",
+      skillPath: "",
+    });
+
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      "---\nname: root-skill\nversion: 2.0.0\n---\n# New Root\n",
+    );
+
+    const updateRes = await spawnCollect(
+      ["npx", "tsx", CLI_BIN, "library", "update", "root-skill", "--json"],
+      { env: { ...process.env, HOME: homeDir, NO_COLOR: "1" } },
+    );
+
+    expect(updateRes.exitCode).toBe(0);
+    const payload = JSON.parse(updateRes.stdout);
+    expect(payload.results[0]).toMatchObject({
+      name: "root-skill",
+      status: "updated",
+      oldVersion: "1.0.0",
+      newVersion: "2.0.0",
+    });
+    await expect(
+      readFile(
+        join(
+          homeDir,
+          ".config",
+          "agent-skill-manager",
+          "library",
+          "skills",
+          "root-skill",
+          "SKILL.md",
+        ),
+        "utf-8",
+      ),
+    ).resolves.toContain("# New Root");
+  });
+
   test("library update unknown skill suggests library list and exits 1 with JSON summary", async () => {
     const homeDir = join(tempDir, "home");
     const res = await spawnCollect(

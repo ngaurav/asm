@@ -20,6 +20,7 @@ import {
   installLibrarySkill,
   readLibraryLock,
   updateLibrarySkill,
+  updateLibrarySkills,
   writeLibraryLock,
 } from "./library";
 
@@ -580,6 +581,63 @@ describe("updateLibrarySkill", () => {
     expect(lock.skills.brainstorming.skillPath).toBe("skills/brainstorming");
   });
 
+  test("updates a local root-source library skill with blank skillPath", async () => {
+    const rootSource = join(tempDir, "root-source");
+    const rootLibraryPath = join(skillsDir, "root-skill");
+    await mkdir(rootSource, { recursive: true });
+    await writeFile(
+      join(rootSource, "SKILL.md"),
+      "---\nname: root-skill\nversion: 1.0.0\n---\n# Old Root\n",
+    );
+    await installLibrarySkill(
+      {
+        sourceDir: rootSource,
+        libraryName: "root-skill",
+        source: `local:${rootSource}`,
+        sourceType: "local",
+        commitHash: "local-root",
+        ref: null,
+        skillPath: "",
+        force: false,
+      },
+      { skillsDir, lockPath },
+    );
+    const originalLock = await readLibraryLock(lockPath);
+    const originalEntry = {
+      ...originalLock.skills["root-skill"],
+      installedAt: "2026-06-18T00:00:00.000Z",
+      ref: "HEAD",
+    };
+    originalLock.skills["root-skill"] = originalEntry;
+    await writeLibraryLock(originalLock, lockPath);
+
+    await writeFile(
+      join(rootSource, "SKILL.md"),
+      "---\nname: root-skill\nversion: 2.0.0\n---\n# New Root\n",
+    );
+
+    const result = await updateLibrarySkill("root-skill", { skillsDir, lockPath });
+
+    expect(result).toMatchObject({
+      name: "root-skill",
+      status: "updated",
+      oldVersion: "1.0.0",
+      newVersion: "2.0.0",
+    });
+    await expect(
+      readFile(join(rootLibraryPath, "SKILL.md"), "utf-8"),
+    ).resolves.toContain("# New Root");
+    const updatedLock = await readLibraryLock(lockPath);
+    const updatedEntry = updatedLock.skills["root-skill"];
+    expect(updatedEntry.source).toBe(originalEntry.source);
+    expect(updatedEntry.sourceType).toBe("local");
+    expect(updatedEntry.ref).toBe("HEAD");
+    expect(updatedEntry.skillPath).toBe("");
+    expect(updatedEntry.libraryPath).toBe(originalEntry.libraryPath);
+    expect(updatedEntry.installedAt).not.toBe(originalEntry.installedAt);
+    expect(updatedEntry.commitHash).not.toBe(originalEntry.commitHash);
+  });
+
   test("preserves update metadata while refreshing version, commit, and installedAt", async () => {
     const originalLock = await readLibraryLock(lockPath);
     const originalEntry = {
@@ -846,9 +904,8 @@ describe("updateLibrarySkill", () => {
     expect(updatedLock).toEqual(blankSourceLock);
   });
 
-  test("returns missing or blank skillPath metadata without replacing library copy", async () => {
+  test("returns missing skillPath metadata without replacing library copy", async () => {
     const lock = await readLibraryLock(lockPath);
-    const originalEntry = { ...lock.skills.brainstorming };
     delete (lock.skills.brainstorming as any).skillPath;
     await writeLibraryLock(lock, lockPath);
     const missingSkillPathLock = await readLibraryLock(lockPath);
@@ -866,54 +923,80 @@ describe("updateLibrarySkill", () => {
     await expect(readFile(join(libraryPath, "SKILL.md"), "utf-8")).resolves.toContain(
       "# Old Source",
     );
-    let updatedLock = await readLibraryLock(lockPath);
+    const updatedLock = await readLibraryLock(lockPath);
     expect(updatedLock).toEqual(missingSkillPathLock);
-
-    updatedLock.skills.brainstorming = { ...originalEntry, skillPath: "" };
-    await writeLibraryLock(updatedLock, lockPath);
-    const blankSkillPathLock = await readLibraryLock(lockPath);
-
-    const blankResult = await updateLibrarySkill("brainstorming", {
-      skillsDir,
-      lockPath,
-    });
-
-    expect(blankResult).toEqual({
-      name: "brainstorming",
-      status: "failed",
-      reason: "Missing update metadata: skillPath",
-    });
-    await expect(readFile(join(libraryPath, "SKILL.md"), "utf-8")).resolves.toContain(
-      "# Old Source",
-    );
-    updatedLock = await readLibraryLock(lockPath);
-    expect(updatedLock).toEqual(blankSkillPathLock);
   });
 
-  test("rejects unsupported sourceType without replacing library copy", async () => {
-    await writeFile(
-      join(sourceRoot, "skills", "brainstorming", "SKILL.md"),
-      "---\nname: brainstorming\nversion: 2.0.0\n---\n# New Source\n",
-    );
+  test.each(["github", "registry"] as const)(
+    "updates a %s-source library skill from recorded clone metadata",
+    async (sourceType) => {
+      const { execFile } = await import("child_process");
+      const { promisify } = await import("util");
+      const exec = promisify(execFile);
+
+      const workDir = join(tempDir, `${sourceType}-work`);
+      const bareRepoPath = join(tempDir, `${sourceType}.git`);
+      await mkdir(join(workDir, "skills", "brainstorming"), { recursive: true });
+      await exec("git", ["init", workDir]);
+      await exec("git", ["-C", workDir, "config", "user.email", "test@test.com"]);
+      await exec("git", ["-C", workDir, "config", "user.name", "Test"]);
+      await writeFile(
+        join(workDir, "skills", "brainstorming", "SKILL.md"),
+        "---\nname: brainstorming\nversion: 2.0.0\n---\n# Remote Source\n",
+      );
+      await exec("git", ["-C", workDir, "add", "."]);
+      await exec("git", ["-C", workDir, "commit", "-m", "remote update"]);
+      const { stdout } = await exec("git", ["-C", workDir, "rev-parse", "HEAD"]);
+      const newCommit = stdout.trim();
+      await exec("git", ["clone", "--bare", workDir, bareRepoPath]);
+
+      const lock = await readLibraryLock(lockPath);
+      lock.skills.brainstorming = {
+        ...lock.skills.brainstorming,
+        source: `file://${bareRepoPath}`,
+        sourceType,
+        commitHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ref: null,
+      };
+      await writeLibraryLock(lock, lockPath);
+
+      const result = await updateLibrarySkill("brainstorming", {
+        skillsDir,
+        lockPath,
+      });
+
+      expect(result).toMatchObject({
+        name: "brainstorming",
+        status: "updated",
+        oldCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        newCommit,
+        oldVersion: "1.0.0",
+        newVersion: "2.0.0",
+      });
+      await expect(
+        readFile(join(libraryPath, "SKILL.md"), "utf-8"),
+      ).resolves.toContain("# Remote Source");
+      const updatedLock = await readLibraryLock(lockPath);
+      expect(updatedLock.skills.brainstorming.commitHash).toBe(newCommit);
+      expect(updatedLock.skills.brainstorming.sourceType).toBe(sourceType);
+      expect(updatedLock.skills.brainstorming.skillPath).toBe("skills/brainstorming");
+    },
+  );
+
+  test("library update --all attempts remote entries instead of treating them as unsupported", async () => {
     const lock = await readLibraryLock(lockPath);
     lock.skills.brainstorming.sourceType = "github";
+    lock.skills.brainstorming.source = "not-a-cloneable-source";
     await writeLibraryLock(lock, lockPath);
 
-    const result = await updateLibrarySkill("brainstorming", {
-      skillsDir,
-      lockPath,
-    });
+    const summary = await updateLibrarySkills(null, { skillsDir, lockPath });
 
-    expect(result).toEqual({
+    expect(summary.failedCount).toBe(1);
+    expect(summary.results[0]).toMatchObject({
       name: "brainstorming",
       status: "failed",
-      reason: "Unsupported library source type for update: github",
+      reason: "Cannot determine remote URL",
     });
-    await expect(readFile(join(libraryPath, "SKILL.md"), "utf-8")).resolves.toContain(
-      "# Old Source",
-    );
-    const updatedLock = await readLibraryLock(lockPath);
-    expect(updatedLock.skills.brainstorming.version).toBe("1.0.0");
   });
 
   test("returns missing libraryPath metadata before touching filesystem", async () => {
