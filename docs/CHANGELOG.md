@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.13.0] - 2026-06-18
+
+### Added
+
+- Marketing landing page at `/` with catalog moved to `/skills` (#313)
+- iOS Swift skill packs in the curated skill index (#315)
+- Top-starred agent skill repositories added to the catalog and README (#316)
+
+### Fixed
+
+- Raster OG image, trimmed meta description, and noscript hero fallback on the website (#314)
+
 ## [2.12.0] - 2026-06-17
 
 ### Added

@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.13.0 — 2026-06-18
+
+### Features
+
+- Add a marketing landing page at `/` and move the skill catalog to `/skills` — new hero, problem/solution narrative, and install CTAs on the site ([#313](https://github.com/luongnv89/asm/issues/313)) — @luongnv89
+- Add iOS Swift skill packs to the curated index and bundled skill-index data ([#315](https://github.com/luongnv89/asm/issues/315)) — @luongnv89
+- Add the missing top-starred agent skill repositories to the ASM catalog — five new indexed collections plus a README section listing all ten requested repos ([#316](https://github.com/luongnv89/asm/issues/316)) — @luongnv89
+
+### Bug Fixes
+
+- Use a raster OG image, trim the meta description, and add a noscript hero fallback for the marketing site ([#314](https://github.com/luongnv89/asm/issues/314)) — @luongnv89
+
+**Full Changelog**: https://github.com/luongnv89/asm/compare/v2.12.0...v2.13.0
+
 ## v2.12.0 — 2026-06-17
 
 ### Features
