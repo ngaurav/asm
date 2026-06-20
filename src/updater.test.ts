@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, writeFile, mkdir, rm } from "fs/promises";
+import { mkdtemp, writeFile, mkdir, rm, readFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -760,6 +760,87 @@ describe("updateSkill happy path", () => {
       "utf-8",
     );
     expect(installedContent).toContain("New version");
+  });
+
+  test("updates nested skills from their recorded skillPath and project scope", async () => {
+    const { execFile } = await import("child_process");
+    const { promisify } = await import("util");
+    const exec = promisify(execFile);
+
+    const workDir = join(tempDir, "nested-work");
+    const bareRepoPath = join(tempDir, "nested.git");
+    await mkdir(join(workDir, "skills", "pdf"), { recursive: true });
+    await exec("git", ["init", workDir]);
+    await exec("git", ["-C", workDir, "config", "user.email", "test@test.com"]);
+    await exec("git", ["-C", workDir, "config", "user.name", "Test"]);
+    await writeFile(
+      join(workDir, "README.md"),
+      "repo wrapper that should not be installed\n",
+    );
+    await writeFile(
+      join(workDir, "skills", "pdf", "SKILL.md"),
+      "---\nname: pdf\nversion: 2.0.0\n---\n# New nested pdf\n",
+    );
+    await exec("git", ["-C", workDir, "add", "."]);
+    await exec("git", ["-C", workDir, "commit", "-m", "init"]);
+    const { stdout } = await exec("git", ["-C", workDir, "rev-parse", "HEAD"]);
+    const newCommit = stdout.trim();
+    await exec("git", ["clone", "--bare", workDir, bareRepoPath]);
+
+    const projectSkillsDir = join(tempDir, "project", ".codex", "skills");
+    const installedDir = join(projectSkillsDir, "pdf");
+    await mkdir(installedDir, { recursive: true });
+    await writeFile(
+      join(installedDir, "SKILL.md"),
+      "---\nname: pdf\nversion: 1.0.0\n---\n# Old pdf\n",
+    );
+
+    let writtenLock: any = null;
+    const { updateSkill } = await import("./updater");
+    const entry = {
+      source: `file://${bareRepoPath}`,
+      commitHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ref: null,
+      installedAt: "2026-01-01T00:00:00.000Z",
+      provider: "codex",
+      sourceType: "github" as const,
+      scope: "project" as const,
+      skillPath: "skills/pdf",
+    } satisfies LockEntry & { scope: "project"; skillPath: string };
+
+    const result = await updateSkill("pdf", entry, false, {
+      auditFn: async () => ({ verdict: "safe" }),
+      loadConfigFn: async () =>
+        ({
+          providers: [
+            {
+              name: "codex",
+              global: join(tempDir, "global", ".codex", "skills"),
+              project: projectSkillsDir,
+            },
+          ],
+        }) as any,
+      resolveProviderPathFn: (p: string) => p,
+      writeLockEntryFn: async (name: string, e: any) => {
+        writtenLock = { name, entry: e };
+      },
+    });
+
+    expect(result.status).toBe("updated");
+    expect(writtenLock).toMatchObject({
+      name: "pdf",
+      entry: {
+        commitHash: newCommit,
+        skillPath: "skills/pdf",
+        scope: "project",
+      },
+    });
+    expect(await readFile(join(installedDir, "SKILL.md"), "utf-8")).toContain(
+      "New nested pdf",
+    );
+    await expect(
+      readFile(join(installedDir, "README.md"), "utf-8"),
+    ).rejects.toThrow();
   });
 
   test("updateSkill skips when security audit returns dangerous", async () => {

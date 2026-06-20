@@ -2,6 +2,7 @@ import {
   loadConfig,
   getConfigPath,
   getDefaultConfig,
+  getLibrarySkillsDir,
   saveConfig,
   resolveProviderPath,
 } from "./config";
@@ -170,8 +171,16 @@ import type { SearchFilters } from "./skill-index";
 import { VERSION_STRING } from "./utils/version";
 import { buildShadowingReport } from "./utils/path-shadowing";
 import { parseEditorCommand } from "./utils/editor";
+import {
+  activateLibrarySkill,
+  deactivateLibrarySkill,
+  findLibrarySkill,
+  installLibrarySkill,
+  listLibrarySkills,
+  updateLibrarySkills,
+} from "./library";
 import { setVerbose } from "./logger";
-import { join as joinPath, resolve } from "path";
+import { join as joinPath, resolve, relative as relativePath } from "path";
 import type {
   Scope,
   SortBy,
@@ -244,6 +253,7 @@ interface ParsedArgs {
     force: boolean;
     path: string | null;
     all: boolean;
+    library: boolean;
     verbose: boolean;
     flat: boolean;
     transport: TransportMode;
@@ -316,6 +326,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       force: false,
       path: null,
       all: false,
+      library: false,
       verbose: false,
       flat: false,
       transport: "auto",
@@ -398,6 +409,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
       result.flags.path = args[i] || null;
     } else if (arg === "--all") {
       result.flags.all = true;
+    } else if (arg === "--library") {
+      result.flags.library = true;
     } else if (arg === "--verbose" || arg === "-V") {
       result.flags.verbose = true;
     } else if (arg === "--flat") {
@@ -540,6 +553,9 @@ ${ansi.bold("Commands:")}
   disable <target>       Disable skill(s) without uninstalling
   enable <target>        Re-enable disabled skill(s)
   install <source>       Install a skill from GitHub or local path
+  activate <skill>       Link a library skill into a provider
+  deactivate <skill>     Remove a library activation from a provider
+  library                Manage centrally installed library skills
   audit                  Detect duplicate skills across tools
   audit security <name>  Run security audit on a skill (or GitHub source)
   export                 Export skill inventory as JSON manifest
@@ -791,6 +807,60 @@ ${ansi.bold("Examples:")}
   asm config show                   ${ansi.dim("View current config")}
   asm config edit                   ${ansi.dim("Edit in $EDITOR")}
   asm config reset -y               ${ansi.dim("Reset without confirmation")}`);
+}
+
+function printLibraryHelp() {
+  console.log(`${ansi.bold("Usage:")} asm library <subcommand> [options]
+
+Manage centrally installed library skills.
+
+${ansi.bold("Subcommands:")}
+  list                 List skills installed in the local library
+  update <skill>       Update one local library skill
+  update --all         Update all local library skills
+
+${ansi.bold("Options:")}
+  --json            Output as JSON
+  -V, --verbose     Show debug output
+
+${ansi.bold("Examples:")}
+  asm library list                  ${ansi.dim("List local library skills")}
+  asm library update brainstorming  ${ansi.dim("Update one local library skill")}
+  asm library update --all --json   ${ansi.dim("Update all and output as JSON")}`);
+}
+
+function printActivateHelp() {
+  console.log(`${ansi.bold("Usage:")} asm activate <skill> -p <tool> -s <scope> [options]
+
+Link a centrally installed library skill into a provider skill folder.
+
+${ansi.bold("Options:")}
+  -p, --tool <name>      Provider to activate into (e.g., claude, codex)
+  -s, --scope <scope>    Activation scope: global or project
+  --name <name>          Link name to create (default: library directory name)
+  -f, --force            Replace an existing target
+  --json                 Output as JSON object
+  -V, --verbose          Show debug output
+
+${ansi.bold("Examples:")}
+  asm activate brainstorming -p codex -s project
+  asm activate brainstorming -p claude -s global --json`);
+}
+
+function printDeactivateHelp() {
+  console.log(`${ansi.bold("Usage:")} asm deactivate <skill> -p <tool> -s <global|project> [options]
+
+Remove a centrally activated library skill from a provider skill folder.
+
+${ansi.bold("Options:")}
+  -p, --tool <name>      Provider to deactivate from (e.g., claude, codex)
+  -s, --scope <scope>    Activation scope: global or project
+  --json                 Output as JSON object
+  -V, --verbose          Show debug output
+
+${ansi.bold("Examples:")}
+  asm deactivate brainstorming -p codex -s project
+  asm deactivate brainstorming -p claude -s global --json`);
 }
 
 // ─── Command Handlers ───────────────────────────────────────────────────────
@@ -2053,6 +2123,261 @@ async function cmdConfig(args: ParsedArgs) {
   }
 }
 
+async function cmdLibrary(args: ParsedArgs) {
+  if (args.flags.help) {
+    printLibraryHelp();
+    return;
+  }
+
+  if (args.subcommand === "update") {
+    await cmdLibraryUpdate(args);
+    return;
+  }
+
+  if (args.subcommand === "list") {
+    const rows = await listLibrarySkills();
+
+    if (args.flags.json) {
+      console.log(JSON.stringify(rows, null, 2));
+      return;
+    }
+
+    printLibraryList(rows);
+    return;
+  }
+
+  error(
+    "Missing or unknown library subcommand. Use: asm library list or asm library update",
+  );
+  console.error(`Run "asm library --help" for usage.`);
+  process.exit(2);
+}
+
+function printLibraryList(rows: Awaited<ReturnType<typeof listLibrarySkills>>) {
+  if (rows.length === 0) {
+    console.log(ansi.dim("No skills installed in the local library."));
+    return;
+  }
+
+  const widths = {
+    name: Math.max("Name".length, ...rows.map((r) => r.name.length)),
+    version: Math.max("Version".length, ...rows.map((r) => r.version.length)),
+    source: Math.max("Source".length, ...rows.map((r) => r.source.length)),
+    path: Math.max("Path".length, ...rows.map((r) => r.skillPath.length)),
+    status: "Status".length,
+  };
+  const formatRow = (
+    name: string,
+    version: string,
+    source: string,
+    path: string,
+    status: string,
+  ) =>
+    [
+      name.padEnd(widths.name),
+      version.padEnd(widths.version),
+      source.padEnd(widths.source),
+      path.padEnd(widths.path),
+      status.padEnd(widths.status),
+    ].join("  ");
+
+  const lines = [
+    ansi.bold(formatRow("Name", "Version", "Source", "Path", "Status")),
+    ...rows.map((row) =>
+      formatRow(
+        row.name,
+        row.version,
+        row.source,
+        row.skillPath,
+        row.missing ? "missing" : "ok",
+      ),
+    ),
+  ];
+  console.log(lines.join("\n"));
+}
+
+function printLibraryUpdateHuman(
+  summary: Awaited<ReturnType<typeof updateLibrarySkills>>,
+) {
+  for (const result of summary.results) {
+    if (result.status === "updated") {
+      console.log(
+        `${ansi.green("✓")} ${result.name}: ${
+          result.oldVersion ?? "unknown"
+        } -> ${result.newVersion ?? "unknown"}`,
+      );
+    } else if (result.status === "skipped") {
+      console.log(
+        `${ansi.yellow("-")} ${result.name}: ${result.reason ?? "skipped"}`,
+      );
+    } else {
+      console.log(
+        `${ansi.red("x")} ${result.name}: ${result.reason ?? "failed"}`,
+      );
+    }
+  }
+
+  console.log(
+    `${summary.updatedCount} updated, ${summary.skippedCount} skipped, ${summary.failedCount} failed`,
+  );
+}
+
+async function cmdLibraryUpdate(args: ParsedArgs) {
+  const names = [...args.positional];
+
+  if (!args.flags.all && names.length === 0) {
+    error(
+      "Missing skill name. Use: asm library update <skill> or asm library update --all",
+    );
+    process.exit(2);
+  }
+  if (args.flags.all && names.length > 0) {
+    error(
+      "Use either asm library update <skill> or asm library update --all, not both.",
+    );
+    process.exit(2);
+  }
+
+  const summary = await updateLibrarySkills(args.flags.all ? null : names);
+
+  if (args.flags.json) {
+    console.log(JSON.stringify(summary, null, 2));
+  } else {
+    printLibraryUpdateHuman(summary);
+  }
+
+  if (summary.failedCount > 0) {
+    process.exit(1);
+  }
+}
+
+async function cmdActivate(args: ParsedArgs) {
+  if (args.flags.help) {
+    printActivateHelp();
+    return;
+  }
+
+  const skillName = args.subcommand;
+  if (!skillName) {
+    error("Missing skill name. Use: asm activate <skill>");
+    console.error(`Run "asm activate --help" for usage.`);
+    process.exit(2);
+  }
+
+  if (args.flags.scope === "both") {
+    error("Activation requires --scope global or --scope project.");
+    process.exit(2);
+  }
+
+  const rows = await listLibrarySkills();
+  const skill = findLibrarySkill(rows, skillName);
+  if (!skill) {
+    error(`Library skill "${skillName}" not found. Run "asm library list".`);
+    process.exit(1);
+  }
+  if (skill.missing) {
+    error(
+      `Library skill "${skillName}" is missing on disk: ${skill.libraryPath}`,
+    );
+    process.exit(1);
+  }
+
+  const config = await loadConfig();
+  const { provider } = await resolveProvider(
+    config,
+    args.flags.provider,
+    process.stdin.isTTY,
+  );
+  const targetTemplate =
+    args.flags.scope === "global" ? provider.global : provider.project;
+  const targetDir = resolveProviderPath(targetTemplate);
+  const activationName = args.flags.name || skill.dirName;
+  const result = await activateLibrarySkill({
+    libraryPath: skill.libraryPath,
+    targetDir,
+    activationName,
+    force: args.flags.force,
+  });
+
+  const payload = {
+    name: activationName,
+    skill: skill.dirName,
+    provider: provider.name,
+    scope: args.flags.scope,
+    path: result.symlinkPath,
+    target: result.targetPath,
+  };
+
+  if (args.flags.json) {
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+
+  console.log(
+    `${ansi.green("✓")} activated ${activationName} (${provider.name}/${args.flags.scope}) -> ${result.targetPath}`,
+  );
+}
+
+async function cmdDeactivate(args: ParsedArgs) {
+  if (args.flags.help) {
+    printDeactivateHelp();
+    return;
+  }
+
+  const skillName = args.subcommand;
+  if (!skillName) {
+    error("Missing skill name. Use: asm deactivate <skill>");
+    console.error(`Run "asm deactivate --help" for usage.`);
+    process.exit(2);
+  }
+
+  if (args.flags.scope === "both") {
+    error("Deactivation requires --scope global or --scope project.");
+    process.exit(2);
+  }
+
+  const config = await loadConfig();
+  let provider: ProviderConfig;
+  try {
+    provider = (
+      await resolveProvider(config, args.flags.provider, process.stdin.isTTY)
+    ).provider;
+  } catch (err: any) {
+    const message = err instanceof Error ? err.message : String(err);
+    error(message);
+    process.exit(2);
+  }
+
+  try {
+    const targetTemplate =
+      args.flags.scope === "global" ? provider.global : provider.project;
+    const targetDir = resolveProviderPath(targetTemplate);
+    const result = await deactivateLibrarySkill({
+      targetDir,
+      activationName: skillName,
+      provider: provider.name,
+      scope: args.flags.scope,
+    });
+
+    if (args.flags.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    console.log(
+      `${ansi.green("✓")} deactivated ${result.name} (${result.provider}/${result.scope}) -> ${result.target}`,
+    );
+  } catch (err: any) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (args.flags.json) {
+      console.log(JSON.stringify({ error: message }, null, 2));
+      process.exit(1);
+    }
+    error(message);
+    process.exit(1);
+  }
+}
+
 function printInstallHelp() {
   console.log(`${ansi.bold("Usage:")} asm install <source> [options]
 
@@ -2081,6 +2406,7 @@ ${ansi.bold("Options:")}
   --path <subdir>        Install skill from a subdirectory of the repo
   --skill <name>         Alias for --path (Vercel skills CLI compatibility)
   --all                  Install all skills found in the repo
+  --library              Install into asm's neutral local library
   -m, --method <method>  Install method: default or vercel (default: default)
                          vercel delegates to npx skills add for tracking
   -t, --transport <mode> Transport: https, ssh, or auto (default: auto)
@@ -2104,6 +2430,7 @@ ${ansi.bold("Local folder:")}
   asm install ~/skills/my-skill            ${ansi.dim("(home-relative path)")}
   asm install ../other-project/skill       ${ansi.dim("(parent-relative path)")}
   asm install ./skills-dir --all           ${ansi.dim("(all skills in directory)")}
+  asm install ./skills-dir --library --all -y ${ansi.dim("(install to local library)")}
 
 ${ansi.bold("Single-skill repo:")}
   asm install github:user/my-skill
@@ -2333,6 +2660,54 @@ async function executeSkillInstall(
   return await executeInstall(plan);
 }
 
+async function installSelectedLibrarySkill(input: {
+  inspection: SkillInspection;
+  source: ReturnType<typeof parseSource>;
+  isLocal: boolean;
+  resolutionSource: ResolutionSource;
+  commitHash: string | null;
+  scanBaseDir: string;
+  force: boolean;
+}): Promise<InstallResult> {
+  const {
+    inspection,
+    source,
+    isLocal,
+    resolutionSource,
+    commitHash,
+    scanBaseDir,
+    force,
+  } = input;
+  const sourceStr = isLocal
+    ? `local:${source.localPath}`
+    : `github:${source.owner}/${source.repo}`;
+  const sourceType = isLocal
+    ? ("local" as const)
+    : resolutionSource === "registry"
+      ? ("registry" as const)
+      : ("github" as const);
+  const skillPath = relativePath(scanBaseDir, inspection.plan.sourceDir);
+  const installed = await installLibrarySkill({
+    sourceDir: inspection.plan.sourceDir,
+    libraryName: inspection.skillName,
+    source: sourceStr,
+    sourceType,
+    commitHash: commitHash || "unknown",
+    ref: source.ref || "main",
+    skillPath,
+    force,
+  });
+
+  return {
+    success: true,
+    path: installed.libraryPath,
+    name: installed.name,
+    version: installed.version,
+    provider: "Library",
+    source: sourceStr,
+  };
+}
+
 async function cmdInstall(args: ParsedArgs) {
   if (args.flags.help) {
     printInstallHelp();
@@ -2344,6 +2719,7 @@ async function cmdInstall(args: ParsedArgs) {
     : undefined;
 
   const startTime = performance.now();
+  const explicitForce = args.flags.force;
   let sourceStr = args.subcommand;
   if (!sourceStr) {
     error("Missing required argument: <source>");
@@ -2511,6 +2887,12 @@ async function cmdInstall(args: ParsedArgs) {
       console.info(`  ${ansi.dim(sourceStr)}`);
     }
 
+    if (args.flags.library && args.flags.method === "vercel") {
+      throw new Error(
+        "--library cannot be combined with --method vercel because the Vercel installer writes to provider skill folders. Use the default method for library installs.",
+      );
+    }
+
     // Vercel method: delegate to npx skills add and then continue with
     // standard asm install to register in asm's local inventory
     if (args.flags.method === "vercel") {
@@ -2543,54 +2925,70 @@ async function cmdInstall(args: ParsedArgs) {
     }
 
     // Step 2: Select provider (before cloning — no wasted time if user cancels)
-    console.info(stepHeader("Selecting provider"));
     const config = await loadConfig();
-    const { provider, allProviders } = await resolveProvider(
-      config,
-      args.flags.provider,
-      !!process.stdin.isTTY,
-    );
+    let provider: ProviderConfig;
+    let allProviders: ProviderConfig[] | null = null;
+    let installScope: "global" | "project" = "global";
 
-    // Step 3: Select scope (global or project)
-    console.info(stepHeader("Selecting scope"));
-    let installScope: "global" | "project";
-
-    if (args.flags.scope === "global" || args.flags.scope === "project") {
-      // Explicit --scope flag provided
-      installScope = args.flags.scope;
-      console.info(
-        `  ${ansi.dim(`scope: ${installScope}`)}${installScope === "global" ? ` (${provider.global})` : ` (${provider.project})`}`,
-      );
-    } else if (!process.stdin.isTTY || args.flags.yes) {
-      // Non-interactive mode: default to global
-      installScope = "global";
-      console.info(
-        `  ${ansi.dim(`scope: global (default)`)} (${provider.global})`,
-      );
-    } else {
-      // Interactive: prompt user to choose
-      const scopeItems = [
-        {
-          label: `Global (${provider.global})`,
-          hint: "Available in all projects",
-          checked: true,
-        },
-        {
-          label: `Project (${provider.project})`,
-          hint: "Available only in this project",
-          checked: false,
-        },
-      ];
-      console.info(""); // blank line before picker
-      const scopeIndices = await checkboxPicker({ items: scopeItems });
-      if (scopeIndices.length === 0) {
-        throw new Error("No scope selected. Aborting.");
+    if (args.flags.library) {
+      console.info(stepHeader("Selecting library"));
+      const inspectionProvider =
+        config.providers.find((p) => p.enabled) ?? config.providers[0];
+      if (!inspectionProvider) {
+        throw new Error("No providers configured.");
       }
-      // Use the first selected scope (single-select behavior)
-      installScope = scopeIndices[0] === 0 ? "global" : "project";
-      console.info(
-        `  Selected: ${ansi.bold(installScope)} ${ansi.dim(`(${installScope === "global" ? provider.global : provider.project})`)}`,
+      provider = inspectionProvider;
+      console.info(`  ${ansi.dim(`library: ${getLibrarySkillsDir()}`)}`);
+    } else {
+      console.info(stepHeader("Selecting provider"));
+      const resolved = await resolveProvider(
+        config,
+        args.flags.provider,
+        !!process.stdin.isTTY,
       );
+      provider = resolved.provider;
+      allProviders = resolved.allProviders;
+
+      // Step 3: Select scope (global or project)
+      console.info(stepHeader("Selecting scope"));
+
+      if (args.flags.scope === "global" || args.flags.scope === "project") {
+        // Explicit --scope flag provided
+        installScope = args.flags.scope;
+        console.info(
+          `  ${ansi.dim(`scope: ${installScope}`)}${installScope === "global" ? ` (${provider.global})` : ` (${provider.project})`}`,
+        );
+      } else if (!process.stdin.isTTY || args.flags.yes) {
+        // Non-interactive mode: default to global
+        installScope = "global";
+        console.info(
+          `  ${ansi.dim(`scope: global (default)`)} (${provider.global})`,
+        );
+      } else {
+        // Interactive: prompt user to choose
+        const scopeItems = [
+          {
+            label: `Global (${provider.global})`,
+            hint: "Available in all projects",
+            checked: true,
+          },
+          {
+            label: `Project (${provider.project})`,
+            hint: "Available only in this project",
+            checked: false,
+          },
+        ];
+        console.info(""); // blank line before picker
+        const scopeIndices = await checkboxPicker({ items: scopeItems });
+        if (scopeIndices.length === 0) {
+          throw new Error("No scope selected. Aborting.");
+        }
+        // Use the first selected scope (single-select behavior)
+        installScope = scopeIndices[0] === 0 ? "global" : "project";
+        console.info(
+          `  Selected: ${ansi.bold(installScope)} ${ansi.dim(`(${installScope === "global" ? provider.global : provider.project})`)}`,
+        );
+      }
     }
 
     // Step 4: Clone repository (or read local source)
@@ -2963,35 +3361,53 @@ async function cmdInstall(args: ParsedArgs) {
         console.info(
           `${progress}Installing ${ansi.bold(inspection.metadata.name)}...`,
         );
-        const result = await executeSkillInstall(inspection.plan, allProviders);
+        const result = args.flags.library
+          ? await installSelectedLibrarySkill({
+              inspection,
+              source,
+              isLocal,
+              resolutionSource,
+              commitHash,
+              scanBaseDir,
+              force: explicitForce,
+            })
+          : await executeSkillInstall(inspection.plan, allProviders);
         results.push(result);
         console.info(
-          `${progress}${ansi.green("✓")} ${inspection.metadata.name} installed to ${ansi.dim(inspection.plan.targetDir)}`,
+          `${progress}${ansi.green("✓")} ${inspection.metadata.name} installed to ${ansi.dim(result.path)}`,
         );
 
         // Write lock entry for tracking
-        try {
-          const sourceStr = isLocal
-            ? `local:${source.localPath}`
-            : `github:${source.owner}/${source.repo}`;
-          const sourceType = isLocal
-            ? ("local" as const)
-            : resolutionSource === "registry"
-              ? ("registry" as const)
-              : ("github" as const);
-          await writeLockEntry(result.name, {
-            source: sourceStr,
-            commitHash: commitHash || "unknown",
-            ref: source.ref || "main",
-            installedAt: new Date().toISOString(),
-            provider: inspection.plan.providerName,
-            sourceType,
-            ...(resolutionSource === "registry"
-              ? { registryName: result.name }
-              : {}),
-          });
-        } catch {
-          // Lock write failure is non-fatal
+        if (!args.flags.library) {
+          try {
+            const sourceStr = isLocal
+              ? `local:${source.localPath}`
+              : `github:${source.owner}/${source.repo}`;
+            const sourceType = isLocal
+              ? ("local" as const)
+              : resolutionSource === "registry"
+                ? ("registry" as const)
+                : ("github" as const);
+            await writeLockEntry(result.name, {
+              source: sourceStr,
+              commitHash: commitHash || "unknown",
+              ref: source.ref || "main",
+              installedAt: new Date().toISOString(),
+              provider: inspection.plan.providerName,
+              scope: inspection.plan.scope,
+              skillPath: relativePath(
+                inspection.plan.tempDir,
+                inspection.plan.sourceDir,
+              ),
+              targetDir: inspection.plan.targetDir,
+              sourceType,
+              ...(resolutionSource === "registry"
+                ? { registryName: result.name }
+                : {}),
+            });
+          } catch {
+            // Lock write failure is non-fatal
+          }
         }
       } catch (installErr: any) {
         failures.push({
@@ -3015,6 +3431,9 @@ async function cmdInstall(args: ParsedArgs) {
       );
       for (const f of failures) {
         console.error(`  ${ansi.red("✗")} ${f.name}: ${f.error}`);
+      }
+      if (args.flags.library) {
+        process.exitCode = 1;
       }
     }
 
@@ -5952,6 +6371,15 @@ export async function runCLI(argv: string[]): Promise<void> {
     case "install":
       await cmdInstall(args);
       break;
+    case "activate":
+      await cmdActivate(args);
+      break;
+    case "deactivate":
+      await cmdDeactivate(args);
+      break;
+    case "library":
+      await cmdLibrary(args);
+      break;
     case "config":
       await cmdConfig(args);
       break;
@@ -6016,6 +6444,9 @@ export function isCLIMode(argv: string[]): boolean {
     "audit",
     "config",
     "install",
+    "activate",
+    "deactivate",
+    "library",
     "export",
     "import",
     "init",

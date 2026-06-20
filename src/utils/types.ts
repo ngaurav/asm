@@ -133,6 +133,12 @@ export interface LockEntry {
   ref: string | null;
   installedAt: string;
   provider: string;
+  /** Scope where the tracked skill was installed. Older lock entries omit this and are treated as global. */
+  scope?: "global" | "project";
+  /** Repo/local-source relative path to the skill directory. Empty string means repository root. */
+  skillPath?: string;
+  /** Absolute installed directory at the time the lock entry was written. */
+  targetDir?: string;
   /** How the skill was resolved: registry, github, or local */
   sourceType?: "registry" | "github" | "local";
   /** Registry name for registry-installed skills (e.g. "code-review") */
@@ -142,6 +148,23 @@ export interface LockEntry {
 export interface LockFile {
   version: 1;
   skills: Record<string, LockEntry>;
+}
+
+export interface LibrarySkillEntry {
+  name: string;
+  version: string;
+  source: string;
+  commitHash: string;
+  ref: string | null;
+  skillPath: string;
+  libraryPath: string;
+  installedAt: string;
+  sourceType?: "registry" | "github" | "local";
+}
+
+export interface LibraryLockFile {
+  version: 1;
+  skills: Record<string, LibrarySkillEntry>;
 }
 
 // ─── Export Types ───────────────────────────────────────────────────────────
@@ -315,6 +338,7 @@ export interface InstallOptions {
   yes: boolean;
   path: string | null;
   all: boolean;
+  library: boolean;
   transport: TransportMode;
   method: InstallMethod;
 }

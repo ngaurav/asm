@@ -20,7 +20,9 @@ import {
   readFile,
   lstat,
   readlink,
+  realpath,
   symlink,
+  chmod,
 } from "fs/promises";
 import { tmpdir, homedir } from "os";
 import { spawnCollect, runInlineTs } from "./utils/test-spawn";
@@ -105,6 +107,12 @@ describe("parseArgs", () => {
     expect(result.command).toBe("uninstall");
     expect(result.subcommand).toBe("blog-draft");
     expect(result.flags.yes).toBe(true);
+  });
+
+  test("parses deactivate with skill name", () => {
+    const result = parse("deactivate", "brainstorming");
+    expect(result.command).toBe("deactivate");
+    expect(result.subcommand).toBe("brainstorming");
   });
 
   test("parses -y as alias for --yes", () => {
@@ -349,6 +357,10 @@ describe("isCLIMode", () => {
     expect(check("uninstall")).toBe(true);
   });
 
+  test("deactivate → CLI mode", () => {
+    expect(check("deactivate")).toBe(true);
+  });
+
   test("config → CLI mode", () => {
     expect(check("config")).toBe(true);
   });
@@ -413,6 +425,8 @@ describe("CLI integration: --help", () => {
     expect(stdout).toContain("search");
     expect(stdout).toContain("inspect");
     expect(stdout).toContain("uninstall");
+    expect(stdout).toContain("deactivate");
+    expect(stdout).toContain("library");
     expect(stdout).toContain("config");
   });
 
@@ -460,6 +474,13 @@ describe("CLI integration: per-command --help", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("asm uninstall");
     expect(stdout).toContain("--yes");
+  });
+
+  test("deactivate --help shows deactivate usage", async () => {
+    const { stdout, exitCode } = await runCLI("deactivate", "--help");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("asm deactivate");
+    expect(stdout).toContain("<global|project>");
   });
 
   test("config --help shows config subcommands", async () => {
@@ -1122,6 +1143,13 @@ describe("parseArgs: install", () => {
     expect(result.subcommand).toBe("github:user/repo");
   });
 
+  test("parses install --library", () => {
+    const result = parse("install", "github:user/repo", "--library");
+    expect(result.command).toBe("install");
+    expect(result.subcommand).toBe("github:user/repo");
+    expect(result.flags.library).toBe(true);
+  });
+
   test("parses --provider flag", () => {
     const result = parse("install", "github:user/repo", "--provider", "claude");
     expect(result.flags.provider).toBe("claude");
@@ -1345,6 +1373,876 @@ describe("CLI integration: install", () => {
   test("main --help includes install command", async () => {
     const { stdout } = await runCLI("--help");
     expect(stdout).toContain("install");
+  });
+});
+
+// ─── CLI integration: install --library ─────────────────────────────────────
+
+describe("CLI integration: install --library", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "asm-test-install-library-"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test("installs selected local skills into the neutral library", async () => {
+    const sourceDir = join(tempDir, "source");
+    await mkdir(join(sourceDir, "one"), { recursive: true });
+    await mkdir(join(sourceDir, "two"), { recursive: true });
+    await writeFile(
+      join(sourceDir, "one", "SKILL.md"),
+      `---\nname: one\nversion: 1.0.0\n---\n# One\n`,
+    );
+    await writeFile(
+      join(sourceDir, "two", "SKILL.md"),
+      `---\nname: two\nversion: 1.0.0\n---\n# Two\n`,
+    );
+
+    const homeDir = join(tempDir, "home");
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        sourceDir,
+        "--library",
+        "--all",
+        "-y",
+        "--json",
+      ],
+      {
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(0);
+    const jsonStart = res.stdout.lastIndexOf("[\n  {");
+    expect(jsonStart).toBeGreaterThanOrEqual(0);
+    const payload = JSON.parse(res.stdout.slice(jsonStart).trim());
+    expect(payload.map((r: { name: string }) => r.name).sort()).toEqual([
+      "one",
+      "two",
+    ]);
+
+    const librarySkillsDir = join(
+      homeDir,
+      ".config",
+      "agent-skill-manager",
+      "library",
+      "skills",
+    );
+    await expect(
+      readFile(join(librarySkillsDir, "one", "SKILL.md"), "utf-8"),
+    ).resolves.toContain("# One");
+    await expect(
+      readFile(join(librarySkillsDir, "two", "SKILL.md"), "utf-8"),
+    ).resolves.toContain("# Two");
+    await expect(
+      readFile(
+        join(
+          homeDir,
+          ".config",
+          "agent-skill-manager",
+          "library",
+          "library-lock.json",
+        ),
+        "utf-8",
+      ),
+    ).resolves.toContain('"one"');
+    await expect(
+      lstat(join(homeDir, ".claude", "skills", "one")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("library list --json returns centrally installed skills", async () => {
+    const source = join(tempDir, "source");
+    await mkdir(join(source, "skills", "one"), { recursive: true });
+    await writeFile(
+      join(source, "skills", "one", "SKILL.md"),
+      "---\nname: one\nversion: 1.0.0\n---\n# One\n",
+    );
+
+    const homeDir = join(tempDir, "home");
+    await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        source,
+        "--library",
+        "--all",
+        "-y",
+        "--json",
+      ],
+      {
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    const res = await spawnCollect(
+      ["npx", "tsx", CLI_BIN, "library", "list", "--json"],
+      {
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(0);
+    const rows = JSON.parse(res.stdout);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      dirName: "one",
+      name: "one",
+      version: "1.0.0",
+      source: "local:" + source,
+      skillPath: "skills/one",
+    });
+  });
+
+  test("library update refreshes a local-source skill and outputs JSON summary", async () => {
+    const source = join(tempDir, "source");
+    const sourceSkillDir = join(source, "skills", "brainstorming");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      "---\nname: brainstorming\nversion: 1.0.0\n---\n# Old\n",
+    );
+
+    const homeDir = join(tempDir, "home");
+    const installRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        source,
+        "--library",
+        "--all",
+        "-y",
+        "--json",
+      ],
+      { env: { ...process.env, HOME: homeDir, NO_COLOR: "1" } },
+    );
+    expect(installRes.exitCode).toBe(0);
+
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      "---\nname: brainstorming\nversion: 2.0.0\n---\n# New\n",
+    );
+
+    const updateRes = await spawnCollect(
+      ["npx", "tsx", CLI_BIN, "library", "update", "brainstorming", "--json"],
+      { env: { ...process.env, HOME: homeDir, NO_COLOR: "1" } },
+    );
+
+    expect(updateRes.exitCode).toBe(0);
+    const payload = JSON.parse(updateRes.stdout);
+    expect(payload.results[0]).toMatchObject({
+      name: "brainstorming",
+      status: "updated",
+      oldVersion: "1.0.0",
+      newVersion: "2.0.0",
+    });
+    await expect(
+      readFile(
+        join(
+          homeDir,
+          ".config",
+          "agent-skill-manager",
+          "library",
+          "skills",
+          "brainstorming",
+          "SKILL.md",
+        ),
+        "utf-8",
+      ),
+    ).resolves.toContain("# New");
+  });
+
+  test("install --library records a root skillPath that library update can refresh", async () => {
+    const sourceSkillDir = join(tempDir, "root-skill");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      "---\nname: root-skill\nversion: 1.0.0\n---\n# Old Root\n",
+    );
+
+    const homeDir = join(tempDir, "home-root-library");
+    const installRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        sourceSkillDir,
+        "--library",
+        "-y",
+        "--json",
+      ],
+      { env: { ...process.env, HOME: homeDir, NO_COLOR: "1" } },
+    );
+    expect(installRes.exitCode).toBe(0);
+    const lock = JSON.parse(
+      await readFile(
+        join(
+          homeDir,
+          ".config",
+          "agent-skill-manager",
+          "library",
+          "library-lock.json",
+        ),
+        "utf-8",
+      ),
+    );
+    expect(lock.skills["root-skill"]).toMatchObject({
+      name: "root-skill",
+      skillPath: "",
+    });
+
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      "---\nname: root-skill\nversion: 2.0.0\n---\n# New Root\n",
+    );
+
+    const updateRes = await spawnCollect(
+      ["npx", "tsx", CLI_BIN, "library", "update", "root-skill", "--json"],
+      { env: { ...process.env, HOME: homeDir, NO_COLOR: "1" } },
+    );
+
+    expect(updateRes.exitCode).toBe(0);
+    const payload = JSON.parse(updateRes.stdout);
+    expect(payload.results[0]).toMatchObject({
+      name: "root-skill",
+      status: "updated",
+      oldVersion: "1.0.0",
+      newVersion: "2.0.0",
+    });
+    await expect(
+      readFile(
+        join(
+          homeDir,
+          ".config",
+          "agent-skill-manager",
+          "library",
+          "skills",
+          "root-skill",
+          "SKILL.md",
+        ),
+        "utf-8",
+      ),
+    ).resolves.toContain("# New Root");
+  });
+
+  test("library update unknown skill suggests library list and exits 1 with JSON summary", async () => {
+    const homeDir = join(tempDir, "home");
+    const res = await spawnCollect(
+      ["npx", "tsx", CLI_BIN, "library", "update", "missing", "--json"],
+      { env: { ...process.env, HOME: homeDir, NO_COLOR: "1" } },
+    );
+
+    expect(res.exitCode).toBe(1);
+    const payload = JSON.parse(res.stdout);
+    expect(payload.failedCount).toBe(1);
+    expect(payload.results[0]).toMatchObject({
+      name: "missing",
+      status: "failed",
+      reason: 'Library skill "missing" not found. Run "asm library list".',
+    });
+  });
+
+  test("library update --all --json reports partial failures with counts", async () => {
+    const source = join(tempDir, "source");
+    await mkdir(join(source, "skills", "good"), { recursive: true });
+    await mkdir(join(source, "skills", "bad"), { recursive: true });
+    await writeFile(
+      join(source, "skills", "good", "SKILL.md"),
+      "---\nname: good\nversion: 1.0.0\n---\n# Good Old\n",
+    );
+    await writeFile(
+      join(source, "skills", "bad", "SKILL.md"),
+      "---\nname: bad\nversion: 1.0.0\n---\n# Bad Old\n",
+    );
+
+    const homeDir = join(tempDir, "home");
+    const installRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        source,
+        "--library",
+        "--all",
+        "-y",
+        "--json",
+      ],
+      { env: { ...process.env, HOME: homeDir, NO_COLOR: "1" } },
+    );
+    expect(installRes.exitCode).toBe(0);
+
+    await writeFile(
+      join(source, "skills", "good", "SKILL.md"),
+      "---\nname: good\nversion: 2.0.0\n---\n# Good New\n",
+    );
+    await rm(join(source, "skills", "bad", "SKILL.md"), { force: true });
+
+    const updateRes = await spawnCollect(
+      ["npx", "tsx", CLI_BIN, "library", "update", "--all", "--json"],
+      { env: { ...process.env, HOME: homeDir, NO_COLOR: "1" } },
+    );
+
+    expect(updateRes.exitCode).toBe(1);
+    const payload = JSON.parse(updateRes.stdout);
+    expect(payload.updatedCount).toBe(1);
+    expect(payload.failedCount).toBe(1);
+    expect(payload.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "good", status: "updated" }),
+        expect.objectContaining({ name: "bad", status: "failed" }),
+      ]),
+    );
+  });
+
+  test("activate links a library skill into a project provider", async () => {
+    const source = join(tempDir, "source");
+    const sourceSkillDir = join(source, "skills", "brainstorming");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      "---\nname: brainstorming\nversion: 1.0.0\n---\n# Brainstorming\n",
+    );
+
+    const homeDir = join(tempDir, "home");
+    const installRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        sourceSkillDir,
+        "--library",
+        "-y",
+        "--json",
+      ],
+      {
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+    expect(installRes.exitCode).toBe(0);
+
+    const projectDir = join(tempDir, "project");
+    await mkdir(projectDir, { recursive: true });
+    const activateRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "activate",
+        "brainstorming",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+        "--json",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(activateRes.exitCode).toBe(0);
+    const payload = JSON.parse(activateRes.stdout);
+    expect(payload.name).toBe("brainstorming");
+
+    const targetPath = join(projectDir, ".codex", "skills", "brainstorming");
+    const libraryPath = join(
+      homeDir,
+      ".config",
+      "agent-skill-manager",
+      "library",
+      "skills",
+      "brainstorming",
+    );
+    expect((await lstat(targetPath)).isSymbolicLink()).toBe(true);
+    await expect(readlink(targetPath)).resolves.toBe(libraryPath);
+  });
+
+  test("activate unknown library skill exits with actionable message", async () => {
+    const homeDir = join(tempDir, "home");
+    const projectDir = join(tempDir, "project");
+    await mkdir(projectDir, { recursive: true });
+
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "activate",
+        "missing-skill",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain('Library skill "missing-skill" not found');
+    expect(res.stderr).toContain("asm library list");
+  });
+
+  test("activate refuses existing target without force", async () => {
+    const source = join(tempDir, "source");
+    const sourceSkillDir = join(source, "skills", "brainstorming");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      "---\nname: brainstorming\nversion: 1.0.0\n---\n# Brainstorming\n",
+    );
+
+    const homeDir = join(tempDir, "home");
+    const installRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        sourceSkillDir,
+        "--library",
+        "-y",
+        "--json",
+      ],
+      {
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+    expect(installRes.exitCode).toBe(0);
+
+    const projectDir = join(tempDir, "project");
+    const targetPath = join(projectDir, ".codex", "skills", "brainstorming");
+    await mkdir(targetPath, { recursive: true });
+
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "activate",
+        "brainstorming",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain("Target already exists");
+    expect(res.stderr).toContain("--force");
+  });
+
+  test("deactivate removes a project activation symlink after install+activate", async () => {
+    const source = join(tempDir, "source");
+    const sourceSkillDir = join(source, "skills", "brainstorming");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      "---\nname: brainstorming\nversion: 1.0.0\n---\n# Brainstorming\n",
+    );
+
+    const homeDir = join(tempDir, "home");
+    const installRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        sourceSkillDir,
+        "--library",
+        "-y",
+        "--json",
+      ],
+      {
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+    expect(installRes.exitCode).toBe(0);
+
+    const projectDir = join(tempDir, "project");
+    await mkdir(projectDir, { recursive: true });
+    const activateRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "activate",
+        "brainstorming",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+        "--json",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+    expect(activateRes.exitCode).toBe(0);
+
+    const targetPath = join(projectDir, ".codex", "skills", "brainstorming");
+    expect((await lstat(targetPath)).isSymbolicLink()).toBe(true);
+    const resolvedProjectDir = await realpath(projectDir);
+    const resolvedTargetPath = join(
+      resolvedProjectDir,
+      ".codex",
+      "skills",
+      "brainstorming",
+    );
+
+    const deactivateRes = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "deactivate",
+        "brainstorming",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+        "--json",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(deactivateRes.exitCode).toBe(0);
+    const payload = JSON.parse(deactivateRes.stdout);
+    expect(payload).toMatchObject({
+      name: "brainstorming",
+      provider: "codex",
+      scope: "project",
+      path: resolvedTargetPath,
+    });
+    await expect(lstat(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readFile(
+        join(
+          homeDir,
+          ".config",
+          "agent-skill-manager",
+          "library",
+          "skills",
+          "brainstorming",
+          "SKILL.md",
+        ),
+        "utf-8",
+      ),
+    ).resolves.toContain("# Brainstorming");
+  });
+
+  test("deactivate refuses a real provider directory", async () => {
+    const homeDir = join(tempDir, "home");
+    const projectDir = join(tempDir, "project");
+    const targetPath = join(projectDir, ".codex", "skills", "brainstorming");
+    await mkdir(targetPath, { recursive: true });
+
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "deactivate",
+        "brainstorming",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain("Refusing to deactivate non-symlink target");
+    expect(res.stderr).not.toMatch(/\n\s+at\s+/);
+    await expect(lstat(targetPath)).resolves.toBeTruthy();
+  });
+
+  test("deactivate reports missing activation", async () => {
+    const homeDir = join(tempDir, "home");
+    const projectDir = join(tempDir, "project");
+    await mkdir(projectDir, { recursive: true });
+
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "deactivate",
+        "brainstorming",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain('Skill "brainstorming" is not active');
+    expect(res.stderr).not.toMatch(/\n\s+at\s+/);
+  });
+
+  test("deactivate missing activation --json returns structured error", async () => {
+    const homeDir = join(tempDir, "home");
+    const projectDir = join(tempDir, "project");
+    await mkdir(projectDir, { recursive: true });
+
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "deactivate",
+        "brainstorming",
+        "-p",
+        "codex",
+        "-s",
+        "project",
+        "--json",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(1);
+    expect(JSON.parse(res.stdout)).toEqual({
+      error: 'Skill "brainstorming" is not active for codex/project.',
+    });
+    expect(res.stderr).not.toMatch(/\n\s+at\s+/);
+  });
+
+  test("deactivate unknown provider exits 2 with usage error", async () => {
+    const homeDir = join(tempDir, "home");
+    const projectDir = join(tempDir, "project");
+    await mkdir(projectDir, { recursive: true });
+
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "deactivate",
+        "brainstorming",
+        "-p",
+        "no-such-provider",
+        "-s",
+        "project",
+        "--json",
+      ],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("Unknown provider");
+    expect(res.stdout).toBe("");
+    expect(res.stderr).not.toMatch(/\n\s+at\s+/);
+  });
+
+  test("does not overwrite an existing library skill when only provider install exists", async () => {
+    const homeDir = join(tempDir, "home");
+    const providerSkillDir = join(homeDir, ".claude", "skills", "foo");
+    await mkdir(providerSkillDir, { recursive: true });
+    await writeFile(
+      join(providerSkillDir, "SKILL.md"),
+      `---\nname: foo\nversion: 1.0.0\n---\n# Existing provider\n`,
+    );
+
+    const librarySkillDir = join(
+      homeDir,
+      ".config",
+      "agent-skill-manager",
+      "library",
+      "skills",
+      "foo",
+    );
+    await mkdir(librarySkillDir, { recursive: true });
+    await writeFile(
+      join(librarySkillDir, "SKILL.md"),
+      `---\nname: foo\nversion: 1.0.0\n---\n# Existing library\n`,
+    );
+    await mkdir(
+      join(homeDir, ".config", "agent-skill-manager", "library"),
+      { recursive: true },
+    );
+    await writeFile(
+      join(
+        homeDir,
+        ".config",
+        "agent-skill-manager",
+        "library",
+        "library-lock.json",
+      ),
+      JSON.stringify(
+        {
+          version: 1,
+          skills: {
+            foo: {
+              name: "foo",
+              version: "1.0.0",
+              source: "local:/existing",
+              sourceType: "local",
+              commitHash: "unknown",
+              ref: "main",
+              skillPath: "foo",
+              libraryPath: librarySkillDir,
+              installedAt: "2026-01-01T00:00:00.000Z",
+            },
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+
+    const sourceSkillDir = join(tempDir, "source", "foo");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      `---\nname: foo\nversion: 2.0.0\n---\n# New source\n`,
+    );
+
+    const res = await spawnCollect(
+      [
+        "npx",
+        "tsx",
+        CLI_BIN,
+        "install",
+        sourceSkillDir,
+        "--library",
+        "-y",
+        "--json",
+      ],
+      {
+        env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+      },
+    );
+
+    expect(res.exitCode).not.toBe(0);
+    expect(`${res.stdout}\n${res.stderr}`).toMatch(
+      /Library skill already exists|--force/,
+    );
+    const librarySkillMd = await readFile(
+      join(librarySkillDir, "SKILL.md"),
+      "utf-8",
+    );
+    expect(librarySkillMd).toContain("# Existing library");
+    expect(librarySkillMd).not.toContain("# New source");
+  });
+
+  test("rejects Vercel method for library installs before provider delegation", async () => {
+    const homeDir = join(tempDir, "home");
+
+    const sourceSkillDir = join(tempDir, "source-vercel", "foo");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      `---\nname: foo\nversion: 2.0.0\n---\n# New source\n`,
+    );
+
+    const fakeBinDir = join(tempDir, "fake-bin");
+    await mkdir(fakeBinDir, { recursive: true });
+    const fakeNpx = join(fakeBinDir, "npx");
+    await writeFile(
+      fakeNpx,
+      `#!/bin/sh
+	if [ "$1" = "--version" ]; then
+	  echo "10.0.0"
+	  exit 0
+	fi
+	echo "unexpected npx delegate"
+	exit 42
+	`,
+    );
+    await chmod(fakeNpx, 0o755);
+
+    const res = await spawnCollect(
+      [
+        process.env.npm_node_execpath || process.execPath,
+        "--import",
+        "tsx",
+        CLI_BIN,
+        "install",
+        sourceSkillDir,
+        "--library",
+        "--method",
+        "vercel",
+        "-y",
+        "--json",
+      ],
+      {
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          NO_COLOR: "1",
+          PATH: `${fakeBinDir}:${process.env.PATH}`,
+        },
+      },
+    );
+
+    expect(
+      res.exitCode,
+      `stdout:\n${res.stdout}\nstderr:\n${res.stderr}`,
+    ).not.toBe(0);
+    expect(`${res.stdout}\n${res.stderr}`).toContain(
+      "--library cannot be combined with --method vercel",
+    );
+    expect(`${res.stdout}\n${res.stderr}`).not.toContain(
+      "unexpected npx delegate",
+    );
+    await expect(
+      lstat(join(homeDir, ".claude", "skills", "foo")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      lstat(
+        join(
+          homeDir,
+          ".config",
+          "agent-skill-manager",
+          "library",
+          "skills",
+          "foo",
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 

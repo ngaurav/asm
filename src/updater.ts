@@ -169,6 +169,10 @@ export function extractOwnerRepo(
   return { owner: parts[0], repo: parts[1] };
 }
 
+function getUpdateSourceDir(tempDir: string, entry: LockEntry): string {
+  return entry.skillPath ? join(tempDir, entry.skillPath) : tempDir;
+}
+
 // ─── Outdated Check ─────────────────────────────────────────────────────────
 
 /**
@@ -408,6 +412,8 @@ export async function updateSkill(
       return { name, status: "skipped", reason: "Already up to date" };
     }
 
+    const updateSourceDir = getUpdateSourceDir(tempDir, entry);
+
     // Step 2: Security audit on the new version
     debug(`updater: running security audit on ${name}`);
     let securityVerdict: SecurityVerdict = "safe";
@@ -415,7 +421,7 @@ export async function updateSkill(
       const auditFn = _overrides?.auditFn ?? auditSkillSecurity;
       const ownerRepo = extractOwnerRepo(entry.source);
       const auditReport = await auditFn(
-        tempDir,
+        updateSourceDir,
         name,
         ownerRepo?.owner,
         ownerRepo?.repo,
@@ -457,10 +463,6 @@ export async function updateSkill(
 
     // Step 3: Atomic swap
     // Determine the installed path from the provider config.
-    // NOTE: The lock entry does not currently record scope (global vs project).
-    // updateSkill always assumes global path. Scope tracking would be a
-    // separate issue — for now we look up the provider's configured global path
-    // from AppConfig rather than hard-coding it.
     const loadConfigFn = _overrides?.loadConfigFn ?? loadConfig;
     const resolvePathFn =
       _overrides?.resolveProviderPathFn ?? resolveProviderPath;
@@ -468,10 +470,13 @@ export async function updateSkill(
     const providerConfig = config.providers.find(
       (p) => p.name === entry.provider,
     );
-    const globalPath = providerConfig
-      ? providerConfig.global
+    const scope = entry.scope ?? "global";
+    const configuredPath = providerConfig
+      ? scope === "project"
+        ? providerConfig.project
+        : providerConfig.global
       : `~/.${entry.provider}/skills`;
-    const installedPath = resolvePathFn(globalPath);
+    const installedPath = resolvePathFn(configuredPath);
     const targetDir = join(installedPath, name);
 
     // Remove .git from cloned repo
@@ -488,7 +493,8 @@ export async function updateSkill(
     } catch {
       // Target doesn't exist — just copy
       const writeLockFn = _overrides?.writeLockEntryFn ?? writeLockEntry;
-      await cp(tempDir, targetDir, { recursive: true });
+      await mkdir(installedPath, { recursive: true });
+      await cp(updateSourceDir, targetDir, { recursive: true });
       await writeLockFn(name, {
         ...entry,
         commitHash: newCommit,
@@ -507,7 +513,7 @@ export async function updateSkill(
     const backupDir = `${targetDir}.bak-${Date.now()}`;
     try {
       await rename(targetDir, backupDir);
-      await cp(tempDir, targetDir, { recursive: true });
+      await cp(updateSourceDir, targetDir, { recursive: true });
       await rm(backupDir, { recursive: true, force: true });
     } catch (swapErr: any) {
       // Rollback: try to restore backup
