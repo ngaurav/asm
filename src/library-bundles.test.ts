@@ -273,4 +273,68 @@ describe("library bundle activation", () => {
       code: "ENOENT",
     });
   });
+
+  it("deactivates aliased activations using library lock matches", async () => {
+    const aliasedDir = join(skillsDir, "aliased");
+    await mkdir(aliasedDir, { recursive: true });
+    await writeFile(
+      join(aliasedDir, "SKILL.md"),
+      "---\nname: different-frontmatter\nversion: 1.0.0\n---\n# aliased\n",
+    );
+    await writeLibraryLock(
+      {
+        version: 1,
+        skills: {
+          aliased: {
+            name: "different-frontmatter",
+            version: "1.0.0",
+            source: "github:owner/repo",
+            sourceType: "github",
+            commitHash: "abc",
+            ref: "main",
+            skillPath: "skills/skill-a",
+            libraryPath: aliasedDir,
+            installedAt: "2026-06-22T00:00:00.000Z",
+          },
+        },
+      },
+      lockPath,
+    );
+
+    const aliasedBundle = {
+      ...bundle(),
+      skills: [
+        { name: "skill-a", installUrl: "github:owner/repo:skills/skill-a" },
+      ],
+    };
+
+    const activation = await activateLibraryBundle(aliasedBundle, {
+      lockPath,
+      targetDir,
+      provider: "codex",
+      scope: "project",
+      force: false,
+    });
+    expect(activation).toMatchObject({ activated: 1, failed: 0 });
+    await expect(readlink(join(targetDir, "aliased"))).resolves.toBe(
+      aliasedDir,
+    );
+
+    const deactivation = await deactivateLibraryBundle(aliasedBundle, {
+      lockPath,
+      targetDir,
+      provider: "codex",
+      scope: "project",
+      librarySkillsDir: skillsDir,
+    });
+
+    expect(deactivation).toMatchObject({
+      deactivated: 1,
+      skipped: 0,
+      failed: 0,
+    });
+    await expect(lstat(join(targetDir, "aliased"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
 });

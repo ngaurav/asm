@@ -261,6 +261,7 @@ export async function activateLibraryBundle(
 export async function deactivateLibraryBundle(
   bundle: BundleManifest,
   options: {
+    lockPath?: string;
     targetDir: string;
     provider: string;
     scope: "global" | "project";
@@ -268,10 +269,30 @@ export async function deactivateLibraryBundle(
   },
 ): Promise<LibraryBundleDeactivationSummary> {
   const summary = emptySummary(bundle.name, bundle.skills.length);
+  const lock = options.lockPath
+    ? await readLibraryLock(options.lockPath)
+    : null;
+
   for (const ref of bundle.skills) {
     try {
+      let activationName = ref.name;
+      if (lock) {
+        const match = findLibraryEntryForBundleSkill(ref, lock);
+        if (match && "ambiguous" in match) {
+          addResult(summary, {
+            name: ref.name,
+            status: "failed",
+            reason: `Ambiguous library matches for "${ref.name}": ${match.ambiguous.join(", ")}`,
+          });
+          continue;
+        }
+        if (match) {
+          activationName = match.dirName;
+        }
+      }
+
       const result = await deactivateLibrarySkill({
-        activationName: ref.name,
+        activationName,
         targetDir: options.targetDir,
         provider: options.provider,
         scope: options.scope,
