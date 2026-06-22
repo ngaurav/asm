@@ -102,7 +102,11 @@ import {
   listPredefinedBundles,
   removeBundle,
 } from "./bundler";
-import { resolveBundleInput } from "./bundle-resolver";
+import {
+  resolveBundleInput,
+  type ResolveBundleInputOptions,
+  type ResolvedBundleInput,
+} from "./bundle-resolver";
 import {
   activateLibraryBundle,
   deactivateLibraryBundle,
@@ -5303,6 +5307,23 @@ function printLibraryBundleSummary(summary: LibraryBundleSummary): void {
   );
 }
 
+export async function withResolvedBundleInput<T>(
+  nameOrPath: string,
+  options: ResolveBundleInputOptions,
+  action: (
+    bundle: import("./utils/types").BundleManifest,
+    resolved: ResolvedBundleInput,
+  ) => Promise<T>,
+  resolveInput: typeof resolveBundleInput = resolveBundleInput,
+): Promise<T> {
+  const resolved = await resolveInput(nameOrPath, options);
+  try {
+    return await action(resolved.bundle, resolved);
+  } finally {
+    await resolved.cleanup();
+  }
+}
+
 async function cmdBundle(args: ParsedArgs) {
   if (args.flags.help) {
     printBundleHelp();
@@ -5471,7 +5492,7 @@ async function cmdBundle(args: ParsedArgs) {
           const answer = await readLine();
           if (answer.toLowerCase() !== "y" && answer.toLowerCase() !== "yes") {
             console.error("Aborted.");
-            process.exit(0);
+            return;
           }
         }
 
@@ -5816,44 +5837,53 @@ async function cmdBundle(args: ParsedArgs) {
     case "show": {
       const nameOrPath = args.positional[0];
       if (!nameOrPath) {
-        error("Missing required argument: <name|file>");
-        console.error(`Usage: asm bundle show <name|file>`);
+        error("Missing required argument: <name|file|github-url>");
+        console.error(`Usage: asm bundle show <name|file|github-url>`);
         process.exit(2);
       }
 
-      let bundle;
       try {
-        bundle = await loadBundle(nameOrPath);
+        await withResolvedBundleInput(
+          nameOrPath,
+          { transport: args.flags.transport },
+          async (bundle) => {
+            if (args.flags.json) {
+              console.log(JSON.stringify(bundle, null, 2));
+            } else {
+              console.error(ansi.bold(`Bundle: ${bundle.name}`));
+              if (bundle.description) {
+                console.error(`  ${bundle.description}`);
+              }
+              if (bundle.author) {
+                console.error(`  ${ansi.dim(`Author: ${bundle.author}`)}`);
+              }
+              console.error(
+                `  ${ansi.dim(`Created: ${new Date(bundle.createdAt).toLocaleString()}`)}`,
+              );
+              if (bundle.tags && bundle.tags.length > 0) {
+                console.error(`  ${ansi.dim(`Tags: ${bundle.tags.join(", ")}`)}`);
+              }
+              console.error(
+                `\n  ${ansi.bold(`Skills (${bundle.skills.length})`)}:`,
+              );
+              for (const skill of bundle.skills) {
+                const versionTag = skill.version ? ` v${skill.version}` : "";
+                console.error(
+                  `    ${ansi.cyan(skill.name)}${ansi.dim(versionTag)}`,
+                );
+                if (skill.description) {
+                  console.error(`      ${ansi.dim(skill.description)}`);
+                }
+                console.error(
+                  `      ${ansi.dim(`install: ${skill.installUrl}`)}`,
+                );
+              }
+            }
+          },
+        );
       } catch (err: any) {
         error(err.message);
         process.exit(1);
-      }
-
-      if (args.flags.json) {
-        console.log(JSON.stringify(bundle, null, 2));
-      } else {
-        console.error(ansi.bold(`Bundle: ${bundle.name}`));
-        if (bundle.description) {
-          console.error(`  ${bundle.description}`);
-        }
-        if (bundle.author) {
-          console.error(`  ${ansi.dim(`Author: ${bundle.author}`)}`);
-        }
-        console.error(
-          `  ${ansi.dim(`Created: ${new Date(bundle.createdAt).toLocaleString()}`)}`,
-        );
-        if (bundle.tags && bundle.tags.length > 0) {
-          console.error(`  ${ansi.dim(`Tags: ${bundle.tags.join(", ")}`)}`);
-        }
-        console.error(`\n  ${ansi.bold(`Skills (${bundle.skills.length})`)}:`);
-        for (const skill of bundle.skills) {
-          const versionTag = skill.version ? ` v${skill.version}` : "";
-          console.error(`    ${ansi.cyan(skill.name)}${ansi.dim(versionTag)}`);
-          if (skill.description) {
-            console.error(`      ${ansi.dim(skill.description)}`);
-          }
-          console.error(`      ${ansi.dim(`install: ${skill.installUrl}`)}`);
-        }
       }
       break;
     }

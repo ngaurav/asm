@@ -7,8 +7,9 @@ import {
   afterEach,
   beforeAll,
   afterAll,
+  vi,
 } from "vitest";
-import { parseArgs, isCLIMode } from "./cli";
+import { parseArgs, isCLIMode, withResolvedBundleInput } from "./cli";
 import { compareSemver } from "./scanner";
 import { join, dirname } from "path";
 import {
@@ -4786,6 +4787,44 @@ describe("parseArgs: bundle", () => {
   });
 });
 
+// ─── bundle input cleanup helper ───────────────────────────────────────────
+
+describe("withResolvedBundleInput", () => {
+  test("runs resolver cleanup when command action returns early", async () => {
+    const cleanup = vi.fn(async () => undefined);
+    const bundle = {
+      version: 1 as const,
+      name: "github-resolved-bundle",
+      description: "Resolved from GitHub",
+      author: "tester",
+      createdAt: new Date().toISOString(),
+      skills: [
+        {
+          name: "resolved-skill",
+          installUrl: "github:owner/repo:skills/resolved-skill",
+        },
+      ],
+    };
+
+    const result = await withResolvedBundleInput(
+      "github:owner/repo",
+      { transport: "auto" },
+      async (resolvedBundle) => {
+        expect(resolvedBundle.name).toBe("github-resolved-bundle");
+        return "aborted";
+      },
+      async () => ({
+        bundle,
+        sourceKind: "github",
+        cleanup,
+      }),
+    );
+
+    expect(result).toBe("aborted");
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ─── CLI integration: bundle ──────────────────────────────────────────────
 
 describe("CLI integration: bundle", () => {
@@ -4908,6 +4947,68 @@ describe("CLI integration: bundle", () => {
       expect(parsed.skills).toHaveLength(1);
       expect(parsed.skills[0].name).toBe("skill-a");
     } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("bundle install interactive abort exits without installing", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "cli-bundle-abort-"));
+    const skillName = `abort-test-skill-${Date.now()}`;
+    try {
+      const skillDir = join(tmpDir, skillName);
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(
+        join(skillDir, "SKILL.md"),
+        `---\nname: ${skillName}\nversion: 1.0.0\n---\n# Abort Test Skill\n`,
+      );
+      const bundleData = {
+        version: 1,
+        name: "abort-test-bundle",
+        description: "Test bundle for abort cleanup",
+        author: "tester",
+        createdAt: new Date().toISOString(),
+        skills: [
+          {
+            name: skillName,
+            installUrl: skillDir,
+          },
+        ],
+      };
+      const bundlePath = join(tmpDir, "abort-test-bundle.json");
+      await writeFile(bundlePath, JSON.stringify(bundleData));
+      const shellQuote = (value: string) =>
+        `'${value.replace(/'/g, `'\\''`)}'`;
+
+      const result = await spawnCollect(
+        [
+          "zsh",
+          "-lc",
+          [
+            "printf 'n\\n'",
+            "|",
+            "script -q /dev/null",
+            "npx tsx",
+            shellQuote(CLI_BIN),
+            "bundle install",
+            shellQuote(bundlePath),
+            "--tool claude",
+          ].join(" "),
+        ],
+        {
+          env: { ...process.env, NO_COLOR: "1" },
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toContain("Aborted.");
+      await expect(
+        lstat(join(homedir(), ".claude", "skills", skillName)),
+      ).rejects.toThrow();
+    } finally {
+      await rm(join(homedir(), ".claude", "skills", skillName), {
+        recursive: true,
+        force: true,
+      });
       await rm(tmpDir, { recursive: true, force: true });
     }
   });
