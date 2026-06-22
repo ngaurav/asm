@@ -4408,6 +4408,42 @@ describe("parseArgs: bundle", () => {
     expect(r.positional).toEqual(["my-bundle"]);
     expect(r.flags.yes).toBe(true);
   });
+
+  test("parses bundle activate with install-missing", () => {
+    const result = parse(
+      "bundle",
+      "activate",
+      "github:owner/repo",
+      "-p",
+      "codex",
+      "-s",
+      "project",
+      "--install-missing",
+    );
+    expect(result.command).toBe("bundle");
+    expect(result.subcommand).toBe("activate");
+    expect(result.positional).toEqual(["github:owner/repo"]);
+    expect(result.flags.provider).toBe("codex");
+    expect(result.flags.scope).toBe("project");
+    expect(result.flags.installMissing).toBe(true);
+  });
+
+  test("parses bundle deactivate", () => {
+    const result = parse(
+      "bundle",
+      "deactivate",
+      "github:owner/repo",
+      "-p",
+      "codex",
+      "-s",
+      "project",
+    );
+    expect(result.command).toBe("bundle");
+    expect(result.subcommand).toBe("deactivate");
+    expect(result.positional).toEqual(["github:owner/repo"]);
+    expect(result.flags.provider).toBe("codex");
+    expect(result.flags.scope).toBe("project");
+  });
 });
 
 // ─── CLI integration: bundle ──────────────────────────────────────────────

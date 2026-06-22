@@ -101,6 +101,13 @@ import {
   listPredefinedBundles,
   removeBundle,
 } from "./bundler";
+import { resolveBundleInput } from "./bundle-resolver";
+import {
+  activateLibraryBundle,
+  deactivateLibraryBundle,
+  installBundleToLibrary,
+  type LibraryBundleSummary,
+} from "./library-bundles";
 import { publishSkill, formatFallbackInstructions } from "./publisher";
 import type { BundleSkillRef, RelocationInfo } from "./utils/types";
 import {
@@ -303,6 +310,7 @@ interface ParsedArgs {
     tags: string | null;
     /** `asm bundle list --predefined` — show pre-defined bundles shipped with ASM (issue #206). */
     predefined: boolean;
+    installMissing: boolean;
   };
 }
 
@@ -351,6 +359,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       author: null,
       tags: null,
       predefined: false,
+      installMissing: false,
     },
   };
 
@@ -507,6 +516,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
       result.flags.tags = args[i] || null;
     } else if (arg === "--predefined") {
       result.flags.predefined = true;
+    } else if (arg === "--install-missing") {
+      result.flags.installMissing = true;
     } else if (arg.startsWith("-")) {
       error(`Unknown option: ${arg}`);
       console.error(`Run "asm --help" for usage.`);
@@ -5201,6 +5212,8 @@ recipe of skills for a particular workflow, domain, or project setup.
 ${ansi.bold("Subcommands:")}
   create <name>          Create a new bundle from installed skills
   install <name|file>    Install all skills from a bundle (supports pre-defined names)
+  activate <name|file|github-url>    Activate all library skills from a bundle
+  deactivate <name|file|github-url>  Deactivate all library skills from a bundle
   list                   List all saved bundles
   list --predefined      List pre-defined bundles shipped with ASM
   show <name|file>       Show bundle details
@@ -5213,6 +5226,7 @@ ${ansi.bold("Options:")}
   -y, --yes            Skip confirmation prompts
   --json               Output as JSON
   --predefined         Show pre-defined bundles shipped with ASM (for list)
+  --install-missing  Install missing bundle skills into the library before activation
   --no-color           Disable ANSI colors
   -V, --verbose        Show debug output
 
@@ -5221,6 +5235,10 @@ ${ansi.bold("Examples:")}
   asm bundle install my-workflow               ${ansi.dim("Install a saved bundle")}
   asm bundle install frontend-dev              ${ansi.dim("Install a pre-defined bundle")}
   asm bundle install ./bundle.json             ${ansi.dim("Install from file")}
+  asm bundle install github:user/repo --library     ${ansi.dim("Install repo bundle into library")}
+  asm bundle activate github:user/repo -p codex -s project
+  asm bundle activate github:user/repo -p codex -s project --install-missing
+  asm bundle deactivate github:user/repo -p codex -s project
   asm bundle list                              ${ansi.dim("Show all saved bundles")}
   asm bundle list --predefined                 ${ansi.dim("List pre-defined bundles")}
   asm bundle list --json                       ${ansi.dim("List bundles as JSON")}
@@ -5230,6 +5248,18 @@ ${ansi.bold("Examples:")}
   asm bundle modify my-workflow --remove skill    ${ansi.dim("Remove a skill from bundle")}
   asm bundle export my-workflow                  ${ansi.dim("Export to ./my-workflow.json")}
   asm bundle export my-workflow out.json         ${ansi.dim("Export bundle to file")}`);
+}
+
+function printLibraryBundleSummary(summary: LibraryBundleSummary): void {
+  console.error(
+    `${ansi.bold("Summary:")} ${summary.total} total, ` +
+      `${ansi.green(String(summary.installed))} installed, ` +
+      `${ansi.green(String(summary.activated))} activated, ` +
+      `${ansi.green(String(summary.deactivated))} deactivated, ` +
+      `${ansi.dim(String(summary.skipped))} skipped, ` +
+      `${ansi.yellow(String(summary.missing))} missing, ` +
+      `${ansi.red(String(summary.failed))} failed`,
+  );
 }
 
 async function cmdBundle(args: ParsedArgs) {
