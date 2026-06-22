@@ -2719,6 +2719,46 @@ async function installSelectedLibrarySkill(input: {
   };
 }
 
+async function installBundleRefToLibrary(
+  ref: BundleSkillRef,
+  force: boolean,
+): Promise<{ name: string; libraryPath: string }> {
+  const source = parseSource(ref.installUrl);
+  const isLocal = !!source.isLocal;
+  let tempDir: string | null = null;
+  try {
+    const rootDir = isLocal
+      ? source.localPath!
+      : await cloneToTemp(source, "auto");
+    tempDir = isLocal ? null : rootDir;
+    const sourceDir = isLocal
+      ? source.localPath!
+      : source.subpath
+        ? joinPath(rootDir, source.subpath)
+        : rootDir;
+    const metadata = await validateSkill(sourceDir);
+    const libraryName = sanitizeName(
+      ref.name || metadata.name || source.repo || metadata.name,
+    );
+    const commitHash = tempDir ? await getCommitHash(tempDir) : "unknown";
+    const installed = await installLibrarySkill({
+      sourceDir,
+      libraryName,
+      source: isLocal
+        ? `local:${source.localPath}`
+        : `github:${source.owner}/${source.repo}`,
+      sourceType: isLocal ? "local" : "github",
+      commitHash: commitHash || "unknown",
+      ref: source.ref || "main",
+      skillPath: isLocal ? "" : source.subpath || "",
+      force,
+    });
+    return { name: installed.name, libraryPath: installed.libraryPath };
+  } finally {
+    if (tempDir) await cleanupTemp(tempDir);
+  }
+}
+
 async function cmdInstall(args: ParsedArgs) {
   if (args.flags.help) {
     printInstallHelp();
@@ -5393,174 +5433,206 @@ async function cmdBundle(args: ParsedArgs) {
       }
 
       let bundle;
+      let cleanupBundleInput: () => Promise<void> = async () => undefined;
       try {
-        bundle = await loadBundle(nameOrPath);
+        const resolved = await resolveBundleInput(nameOrPath, {
+          transport: args.flags.transport,
+        });
+        bundle = resolved.bundle;
+        cleanupBundleInput = resolved.cleanup;
       } catch (err: any) {
         error(err.message);
         process.exit(1);
       }
 
-      console.error(
-        `${ansi.bold("Bundle:")} ${bundle.name} (${bundle.skills.length} skills)`,
-      );
-      if (bundle.description) {
-        console.error(`  ${ansi.dim(bundle.description)}`);
-      }
-      console.error("");
-
-      // Show skills to install
-      for (const skill of bundle.skills) {
-        const versionTag = skill.version ? ` v${skill.version}` : "";
+      try {
         console.error(
-          `  ${ansi.cyan(skill.name)}${ansi.dim(versionTag)} ${ansi.dim(`-> ${skill.installUrl}`)}`,
+          `${ansi.bold("Bundle:")} ${bundle.name} (${bundle.skills.length} skills)`,
         );
-      }
-
-      // Confirm
-      if (!args.flags.yes && process.stdin.isTTY) {
-        process.stderr.write(
-          `\n${ansi.bold("Install all skills from this bundle?")} [y/N] `,
-        );
-        const answer = await readLine();
-        if (answer.toLowerCase() !== "y" && answer.toLowerCase() !== "yes") {
-          console.error("Aborted.");
-          process.exit(0);
+        if (bundle.description) {
+          console.error(`  ${ansi.dim(bundle.description)}`);
         }
-      }
-
-      // Install each skill
-      const results: Array<{
-        name: string;
-        status: "installed" | "skipped" | "failed";
-        reason?: string;
-      }> = [];
-
-      const config = await loadConfig();
-      const { provider } = await resolveProvider(
-        config,
-        args.flags.provider,
-        false, // non-interactive for batch
-      );
-
-      const installScope: "global" | "project" =
-        args.flags.scope === "global" || args.flags.scope === "project"
-          ? args.flags.scope
-          : "global";
-
-      for (const skill of bundle.skills) {
-        console.error(`\n  Installing ${ansi.bold(skill.name)}...`);
-        try {
-          // Check if git is available for remote installs
-          const isRemote =
-            skill.installUrl.startsWith("github:") ||
-            skill.installUrl.startsWith("https://github.com/");
-
-          if (isRemote) {
-            await checkGitAvailable();
-          }
-
-          const source = parseSource(skill.installUrl);
-          const isLocal = !!source.isLocal;
-          let tempDir: string | null = null;
-
-          try {
-            let rootDir: string;
-            let skillDir: string;
-
-            if (!isLocal) {
-              tempDir = await cloneToTemp(source, args.flags.transport);
-              rootDir = tempDir;
-              skillDir = source.subpath
-                ? joinPath(tempDir, source.subpath)
-                : tempDir;
-            } else {
-              rootDir = source.localPath!;
-              skillDir = source.localPath!;
-            }
-
-            const metadata = await validateSkill(skillDir);
-            const skillName = sanitizeName(
-              skill.name || metadata.name || source.repo,
-            );
-
-            const plan = buildInstallPlan(
-              source,
-              rootDir,
-              skillDir,
-              skillName,
-              provider,
-              args.flags.force,
-              installScope,
-            );
-
-            // Check if skill already exists; skip unless --force
-            try {
-              await checkConflict(plan.targetDir, plan.force);
-            } catch (conflictErr: any) {
-              if (conflictErr.message?.includes("--force")) {
-                results.push({
-                  name: skill.name,
-                  status: "skipped",
-                  reason: "Already installed. Use --force to overwrite.",
-                });
-                console.error(
-                  `    ${ansi.dim("---")} ${skill.name} skipped (already installed)`,
-                );
-                continue;
-              }
-              throw conflictErr;
-            }
-
-            await executeInstall(plan);
-            results.push({ name: skill.name, status: "installed" });
-            console.error(`    ${ansi.green("+++")} ${skill.name} installed`);
-          } finally {
-            if (tempDir) {
-              await cleanupTemp(tempDir);
-            }
-          }
-        } catch (err: any) {
-          results.push({
-            name: skill.name,
-            status: "failed",
-            reason: err.message,
-          });
-          console.error(`    ${ansi.red("!!!")} ${skill.name}: ${err.message}`);
-        }
-      }
-
-      // Summary
-      const installed = results.filter((r) => r.status === "installed").length;
-      const skipped = results.filter((r) => r.status === "skipped").length;
-      const failed = results.filter((r) => r.status === "failed").length;
-
-      if (args.flags.json) {
-        console.log(
-          JSON.stringify(
-            {
-              bundleName: bundle.name,
-              total: results.length,
-              installed,
-              skipped,
-              failed,
-              results,
-            },
-            null,
-            2,
-          ),
-        );
-      } else {
         console.error("");
-        console.error(
-          `${ansi.bold("Summary:")} ${results.length} total, ` +
-            `${ansi.green(String(installed))} installed, ` +
-            (skipped > 0 ? `${ansi.dim(String(skipped))} skipped, ` : "") +
-            `${ansi.red(String(failed))} failed`,
-        );
-      }
 
-      if (failed > 0) {
-        process.exitCode = 1;
+        // Show skills to install
+        for (const skill of bundle.skills) {
+          const versionTag = skill.version ? ` v${skill.version}` : "";
+          console.error(
+            `  ${ansi.cyan(skill.name)}${ansi.dim(versionTag)} ${ansi.dim(`-> ${skill.installUrl}`)}`,
+          );
+        }
+
+        // Confirm
+        if (!args.flags.yes && process.stdin.isTTY) {
+          process.stderr.write(
+            `\n${ansi.bold("Install all skills from this bundle?")} [y/N] `,
+          );
+          const answer = await readLine();
+          if (answer.toLowerCase() !== "y" && answer.toLowerCase() !== "yes") {
+            console.error("Aborted.");
+            process.exit(0);
+          }
+        }
+
+        if (args.flags.library) {
+          const summary = await installBundleToLibrary(bundle, {
+            force: args.flags.force,
+            installSkillFromRef: (ref) =>
+              installBundleRefToLibrary(ref, args.flags.force),
+          });
+
+          if (args.flags.json) {
+            console.log(JSON.stringify(summary, null, 2));
+          } else {
+            printLibraryBundleSummary(summary);
+          }
+
+          if (summary.failed > 0) {
+            process.exitCode = 1;
+          }
+          break;
+        }
+
+        // Install each skill
+        const results: Array<{
+          name: string;
+          status: "installed" | "skipped" | "failed";
+          reason?: string;
+        }> = [];
+
+        const config = await loadConfig();
+        const { provider } = await resolveProvider(
+          config,
+          args.flags.provider,
+          false, // non-interactive for batch
+        );
+
+        const installScope: "global" | "project" =
+          args.flags.scope === "global" || args.flags.scope === "project"
+            ? args.flags.scope
+            : "global";
+
+        for (const skill of bundle.skills) {
+          console.error(`\n  Installing ${ansi.bold(skill.name)}...`);
+          try {
+            // Check if git is available for remote installs
+            const isRemote =
+              skill.installUrl.startsWith("github:") ||
+              skill.installUrl.startsWith("https://github.com/");
+
+            if (isRemote) {
+              await checkGitAvailable();
+            }
+
+            const source = parseSource(skill.installUrl);
+            const isLocal = !!source.isLocal;
+            let tempDir: string | null = null;
+
+            try {
+              let rootDir: string;
+              let skillDir: string;
+
+              if (!isLocal) {
+                tempDir = await cloneToTemp(source, args.flags.transport);
+                rootDir = tempDir;
+                skillDir = source.subpath
+                  ? joinPath(tempDir, source.subpath)
+                  : tempDir;
+              } else {
+                rootDir = source.localPath!;
+                skillDir = source.localPath!;
+              }
+
+              const metadata = await validateSkill(skillDir);
+              const skillName = sanitizeName(
+                skill.name || metadata.name || source.repo,
+              );
+
+              const plan = buildInstallPlan(
+                source,
+                rootDir,
+                skillDir,
+                skillName,
+                provider,
+                args.flags.force,
+                installScope,
+              );
+
+              // Check if skill already exists; skip unless --force
+              try {
+                await checkConflict(plan.targetDir, plan.force);
+              } catch (conflictErr: any) {
+                if (conflictErr.message?.includes("--force")) {
+                  results.push({
+                    name: skill.name,
+                    status: "skipped",
+                    reason: "Already installed. Use --force to overwrite.",
+                  });
+                  console.error(
+                    `    ${ansi.dim("---")} ${skill.name} skipped (already installed)`,
+                  );
+                  continue;
+                }
+                throw conflictErr;
+              }
+
+              await executeInstall(plan);
+              results.push({ name: skill.name, status: "installed" });
+              console.error(`    ${ansi.green("+++")} ${skill.name} installed`);
+            } finally {
+              if (tempDir) {
+                await cleanupTemp(tempDir);
+              }
+            }
+          } catch (err: any) {
+            results.push({
+              name: skill.name,
+              status: "failed",
+              reason: err.message,
+            });
+            console.error(
+              `    ${ansi.red("!!!")} ${skill.name}: ${err.message}`,
+            );
+          }
+        }
+
+        // Summary
+        const installed = results.filter(
+          (r) => r.status === "installed",
+        ).length;
+        const skipped = results.filter((r) => r.status === "skipped").length;
+        const failed = results.filter((r) => r.status === "failed").length;
+
+        if (args.flags.json) {
+          console.log(
+            JSON.stringify(
+              {
+                bundleName: bundle.name,
+                total: results.length,
+                installed,
+                skipped,
+                failed,
+                results,
+              },
+              null,
+              2,
+            ),
+          );
+        } else {
+          console.error("");
+          console.error(
+            `${ansi.bold("Summary:")} ${results.length} total, ` +
+              `${ansi.green(String(installed))} installed, ` +
+              (skipped > 0 ? `${ansi.dim(String(skipped))} skipped, ` : "") +
+              `${ansi.red(String(failed))} failed`,
+          );
+        }
+
+        if (failed > 0) {
+          process.exitCode = 1;
+        }
+      } finally {
+        await cleanupBundleInput();
       }
       break;
     }

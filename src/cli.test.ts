@@ -1389,6 +1389,75 @@ describe("CLI integration: install --library", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
+  test("bundle install --library installs all local bundle skills into the library", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "asm-bundle-library-cli-"));
+    try {
+      const sourceRoot = join(tempDir, "repo");
+      const skillA = join(sourceRoot, "skills", "skill-a");
+      const skillB = join(sourceRoot, "skills", "skill-b");
+      await mkdir(skillA, { recursive: true });
+      await mkdir(skillB, { recursive: true });
+      await writeFile(
+        join(skillA, "SKILL.md"),
+        "---\nname: skill-a\nversion: 1.0.0\n---\n# A\n",
+      );
+      await writeFile(
+        join(skillB, "SKILL.md"),
+        "---\nname: skill-b\nversion: 1.0.0\n---\n# B\n",
+      );
+      const bundlePath = join(tempDir, "bundle.json");
+      await writeFile(
+        bundlePath,
+        JSON.stringify({
+          version: 1,
+          name: "local-bundle",
+          description: "Local test bundle",
+          author: "test",
+          createdAt: "2026-06-22T00:00:00.000Z",
+          skills: [
+            { name: "skill-a", installUrl: skillA },
+            { name: "skill-b", installUrl: skillB },
+          ],
+        }),
+      );
+
+      const homeDir = join(tempDir, "home");
+      const res = await spawnCollect(
+        [
+          "npx",
+          "tsx",
+          CLI_BIN,
+          "bundle",
+          "install",
+          bundlePath,
+          "--library",
+          "-y",
+          "--json",
+        ],
+        {
+          env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+        },
+      );
+      expect(res.exitCode).toBe(0);
+      const libraryDir = join(
+        homeDir,
+        ".config",
+        "agent-skill-manager",
+        "library",
+      );
+      expect((await readdir(join(libraryDir, "skills"))).sort()).toEqual([
+        "skill-a",
+        "skill-b",
+      ]);
+      const lock = JSON.parse(
+        await readFile(join(libraryDir, "library-lock.json"), "utf-8"),
+      );
+      expect(Object.keys(lock.skills).sort()).toEqual(["skill-a", "skill-b"]);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("installs selected local skills into the neutral library", async () => {
     const sourceDir = join(tempDir, "source");
     await mkdir(join(sourceDir, "one"), { recursive: true });
