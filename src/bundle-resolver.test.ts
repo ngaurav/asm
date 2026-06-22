@@ -2,6 +2,33 @@ import { describe, expect, it, vi } from "vitest";
 import { resolveBundleInput, isGithubBundleInput } from "./bundle-resolver";
 import type { BundleManifest, IndexedSkill } from "./utils/types";
 
+const installerMocks = vi.hoisted(() => ({
+  resolveSubpath: vi.fn(async (source: any) => {
+    if (
+      source.owner === "owner" &&
+      source.repo === "repo" &&
+      source.ref === "main/subdir"
+    ) {
+      return {
+        ...source,
+        ref: "main",
+        subpath: "subdir",
+      };
+    }
+    return source;
+  }),
+}));
+
+vi.mock("./installer", async () => {
+  const actual = await vi.importActual<typeof import("./installer")>(
+    "./installer",
+  );
+  return {
+    ...actual,
+    resolveSubpath: (source: unknown) => installerMocks.resolveSubpath(source),
+  };
+});
+
 function bundle(overrides: Partial<BundleManifest> = {}): BundleManifest {
   return {
     version: 1,
@@ -35,11 +62,23 @@ function indexedSkill(overrides: Partial<IndexedSkill> = {}): IndexedSkill {
 }
 
 describe("isGithubBundleInput", () => {
-  it("recognizes GitHub shorthand and HTTPS URLs", () => {
+  it("recognizes GitHub shorthand, repo roots, and tree URLs", () => {
     expect(isGithubBundleInput("github:owner/repo")).toBe(true);
     expect(isGithubBundleInput("https://github.com/owner/repo")).toBe(true);
+    expect(isGithubBundleInput("https://github.com/owner/repo/tree/main")).toBe(
+      true,
+    );
+    expect(
+      isGithubBundleInput("https://github.com/owner/repo/tree/main/subdir"),
+    ).toBe(true);
     expect(isGithubBundleInput("frontend-dev")).toBe(false);
     expect(isGithubBundleInput("./bundle.json")).toBe(false);
+    expect(isGithubBundleInput("https://github.com/owner/repo/issues")).toBe(
+      false,
+    );
+    expect(
+      isGithubBundleInput("https://github.com/owner/repo/blob/main/file"),
+    ).toBe(false);
   });
 });
 
@@ -119,6 +158,50 @@ describe("resolveBundleInput", () => {
       "github:owner/repo:skills/skill-a",
       "github:owner/repo:skills/skill-b",
     ]);
+  });
+
+  it("uses the resolved subdirectory root for GitHub inputs with subpaths", async () => {
+    const cleanupTempFn = vi.fn(async () => undefined);
+    const discoverSkillsFn = vi.fn(async () => [
+      indexedSkill({
+        name: "skill-a",
+        relPath: "",
+        installUrl: "github:owner/repo:subdir",
+      }),
+      indexedSkill({
+        name: "skill-b",
+        relPath: "nested/skill-b",
+        installUrl: "github:owner/repo:subdir/nested/skill-b",
+      }),
+    ]);
+    const discoverExplicitRepoBundlesFn = vi.fn(async (repoRoot, index) => {
+      expect(repoRoot).toBe("/tmp/repo/subdir");
+      expect(index.skills.map((s: IndexedSkill) => s.installUrl)).toEqual([
+        "github:owner/repo:subdir",
+        "github:owner/repo:subdir/nested/skill-b",
+      ]);
+      return [];
+    });
+
+    const resolved = await resolveBundleInput(
+      "https://github.com/owner/repo/tree/main/subdir",
+      {
+        cloneToTempFn: vi.fn(async () => "/tmp/repo"),
+        cleanupTempFn,
+        discoverSkillsFn,
+        discoverExplicitRepoBundlesFn,
+        now: () => new Date("2026-06-22T00:00:00.000Z"),
+      },
+    );
+
+    expect(discoverSkillsFn).toHaveBeenCalledWith("/tmp/repo/subdir");
+    expect(discoverExplicitRepoBundlesFn).toHaveBeenCalledTimes(1);
+    expect(resolved.bundle.skills.map((s) => s.installUrl)).toEqual([
+      "github:owner/repo:subdir",
+      "github:owner/repo:subdir/nested/skill-b",
+    ]);
+    await resolved.cleanup();
+    expect(cleanupTempFn).toHaveBeenCalledWith("/tmp/repo");
   });
 
   it("fails clearly when multiple explicit bundles exist", async () => {

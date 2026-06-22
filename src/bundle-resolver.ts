@@ -1,9 +1,10 @@
-import { basename } from "path";
+import { join } from "path";
 import {
   cleanupTemp,
   cloneToTemp,
   discoverSkills,
   parseSource,
+  resolveSubpath,
 } from "./installer";
 import { loadBundle } from "./bundler";
 import { discoverExplicitRepoBundles } from "./repo-bundles";
@@ -42,18 +43,20 @@ function slugify(input: string): string {
     .replace(/^-|-$/g, "");
 }
 
+const GITHUB_BUNDLE_URL_RE =
+  /^https?:\/\/github\.com\/[^/]+\/[^/]+(?:\.git)?(?:\/tree\/[^/]+(?:\/[^/]+)*)?\/?$/i;
+
 export function isGithubBundleInput(input: string): boolean {
-  return (
-    input.startsWith("github:") ||
-    /^https?:\/\/github\.com\/[^/]+\/[^/]+/i.test(input)
-  );
+  return input.startsWith("github:") || GITHUB_BUNDLE_URL_RE.test(input);
 }
 
 function toIndexedSkill(
   skill: Awaited<ReturnType<typeof discoverSkills>>[number],
   owner: string,
   repo: string,
+  subpath: string | null,
 ): IndexedSkill {
+  const relPath = joinRepoPath(subpath, skill.relPath);
   return {
     name: skill.name,
     description: skill.description || "",
@@ -62,7 +65,7 @@ function toIndexedSkill(
     creator: skill.creator || "",
     compatibility: skill.compatibility || "",
     allowedTools: skill.allowedTools || [],
-    installUrl: `github:${owner}/${repo}:${skill.relPath}`,
+    installUrl: `github:${owner}/${repo}${relPath ? `:${relPath}` : ""}`,
     relPath: skill.relPath,
   };
 }
@@ -106,6 +109,14 @@ function looksLikeFileInput(input: string): boolean {
   return input.includes("/") || input.includes("\\") || input.endsWith(".json");
 }
 
+function joinRepoPath(prefix: string | null, relPath: string): string {
+  const cleanPrefix = prefix?.replace(/^\/+|\/+$/g, "") || "";
+  const cleanRelPath = relPath.replace(/^\/+|\/+$/g, "");
+  if (!cleanPrefix) return cleanRelPath;
+  if (!cleanRelPath) return cleanPrefix;
+  return `${cleanPrefix}/${cleanRelPath}`;
+}
+
 export async function resolveBundleInput(
   input: string,
   options: ResolveBundleInputOptions = {},
@@ -120,24 +131,28 @@ export async function resolveBundleInput(
     };
   }
 
-  const source = parseSource(input);
+  const source = await resolveSubpath(parseSource(input));
   const cloneToTempFn = options.cloneToTempFn ?? cloneToTemp;
   const cleanupTempFn = options.cleanupTempFn ?? cleanupTemp;
   const discoverSkillsFn = options.discoverSkillsFn ?? discoverSkills;
   const discoverExplicitRepoBundlesFn =
     options.discoverExplicitRepoBundlesFn ?? discoverExplicitRepoBundles;
   const now = options.now ?? (() => new Date());
-  const repo = stripGitSuffix(source.repo || basename(input));
+  const repo = stripGitSuffix(source.repo);
   const tempDir = await cloneToTempFn(source, options.transport ?? "auto");
   const cleanup = async () => cleanupTempFn(tempDir);
+  const effectiveRoot = source.subpath ? join(tempDir, source.subpath) : tempDir;
 
   try {
-    const discoveredSkills = await discoverSkillsFn(tempDir);
+    const discoveredSkills = await discoverSkillsFn(effectiveRoot);
     const indexedSkills = discoveredSkills.map((skill) =>
-      toIndexedSkill(skill, source.owner, repo),
+      toIndexedSkill(skill, source.owner, repo, source.subpath),
     );
     const index = makeRepoIndex(source.owner, repo, indexedSkills, now);
-    const explicitBundles = await discoverExplicitRepoBundlesFn(tempDir, index);
+    const explicitBundles = await discoverExplicitRepoBundlesFn(
+      effectiveRoot,
+      index,
+    );
 
     if (explicitBundles.length === 1) {
       return { bundle: explicitBundles[0], sourceKind: "github", cleanup };
