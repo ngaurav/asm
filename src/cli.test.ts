@@ -1458,6 +1458,175 @@ describe("CLI integration: install --library", () => {
     }
   });
 
+  test("bundle activate links all library skills into a provider project scope", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "asm-bundle-activate-cli-"));
+    try {
+      const homeDir = join(tempDir, "home");
+      const projectDir = join(tempDir, "project");
+      const configDir = join(homeDir, ".config", "agent-skill-manager");
+      const librarySkills = join(configDir, "library", "skills");
+      const targetDir = join(projectDir, ".codex", "skills");
+      await mkdir(projectDir, { recursive: true });
+      for (const name of ["skill-a", "skill-b"]) {
+        const dir = join(librarySkills, name);
+        await mkdir(dir, { recursive: true });
+        await writeFile(
+          join(dir, "SKILL.md"),
+          `---\nname: ${name}\nversion: 1.0.0\n---\n# ${name}\n`,
+        );
+      }
+      await writeFile(
+        join(configDir, "library", "library-lock.json"),
+        JSON.stringify({
+          version: 1,
+          skills: {
+            "skill-a": {
+              name: "skill-a",
+              version: "1.0.0",
+              source: "github:owner/repo",
+              sourceType: "github",
+              commitHash: "abc",
+              ref: "main",
+              skillPath: "skills/skill-a",
+              libraryPath: join(librarySkills, "skill-a"),
+              installedAt: "2026-06-22T00:00:00.000Z",
+            },
+            "skill-b": {
+              name: "skill-b",
+              version: "1.0.0",
+              source: "github:owner/repo",
+              sourceType: "github",
+              commitHash: "abc",
+              ref: "main",
+              skillPath: "skills/skill-b",
+              libraryPath: join(librarySkills, "skill-b"),
+              installedAt: "2026-06-22T00:00:00.000Z",
+            },
+          },
+        }),
+      );
+      const bundlePath = join(tempDir, "bundle.json");
+      await writeFile(
+        bundlePath,
+        JSON.stringify({
+          version: 1,
+          name: "local-bundle",
+          description: "Local test bundle",
+          author: "test",
+          createdAt: "2026-06-22T00:00:00.000Z",
+          skills: [
+            { name: "skill-a", installUrl: "github:owner/repo:skills/skill-a" },
+            { name: "skill-b", installUrl: "github:owner/repo:skills/skill-b" },
+          ],
+        }),
+      );
+
+      const res = await spawnCollect(
+        [
+          "npx",
+          "tsx",
+          CLI_BIN,
+          "bundle",
+          "activate",
+          bundlePath,
+          "-p",
+          "codex",
+          "-s",
+          "project",
+          "--json",
+        ],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+        },
+      );
+      expect(res.exitCode).toBe(0);
+      expect(await readlink(join(targetDir, "skill-a"))).toBe(
+        join(librarySkills, "skill-a"),
+      );
+      expect(await readlink(join(targetDir, "skill-b"))).toBe(
+        join(librarySkills, "skill-b"),
+      );
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("bundle deactivate removes active library symlinks", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "asm-bundle-deactivate-cli-"));
+    try {
+      const homeDir = join(tempDir, "home");
+      const projectDir = join(tempDir, "project");
+      const configDir = join(homeDir, ".config", "agent-skill-manager");
+      const librarySkills = join(configDir, "library", "skills");
+      const targetDir = join(projectDir, ".codex", "skills");
+      await mkdir(projectDir, { recursive: true });
+      for (const name of ["skill-a", "skill-b"]) {
+        const dir = join(librarySkills, name);
+        await mkdir(dir, { recursive: true });
+        await writeFile(
+          join(dir, "SKILL.md"),
+          `---\nname: ${name}\nversion: 1.0.0\n---\n# ${name}\n`,
+        );
+      }
+      await mkdir(targetDir, { recursive: true });
+      await symlink(
+        join(librarySkills, "skill-a"),
+        join(targetDir, "skill-a"),
+        "dir",
+      );
+      await symlink(
+        join(librarySkills, "skill-b"),
+        join(targetDir, "skill-b"),
+        "dir",
+      );
+      const bundlePath = join(tempDir, "bundle.json");
+      await writeFile(
+        bundlePath,
+        JSON.stringify({
+          version: 1,
+          name: "local-bundle",
+          description: "Local test bundle",
+          author: "test",
+          createdAt: "2026-06-22T00:00:00.000Z",
+          skills: [
+            { name: "skill-a", installUrl: "github:owner/repo:skills/skill-a" },
+            { name: "skill-b", installUrl: "github:owner/repo:skills/skill-b" },
+          ],
+        }),
+      );
+
+      const res = await spawnCollect(
+        [
+          "npx",
+          "tsx",
+          CLI_BIN,
+          "bundle",
+          "deactivate",
+          bundlePath,
+          "-p",
+          "codex",
+          "-s",
+          "project",
+          "--json",
+        ],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir, NO_COLOR: "1" },
+        },
+      );
+      expect(res.exitCode).toBe(0);
+      await expect(lstat(join(targetDir, "skill-a"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(lstat(join(targetDir, "skill-b"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("installs selected local skills into the neutral library", async () => {
     const sourceDir = join(tempDir, "source");
     await mkdir(join(sourceDir, "one"), { recursive: true });

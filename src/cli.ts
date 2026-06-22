@@ -5637,6 +5637,100 @@ async function cmdBundle(args: ParsedArgs) {
       break;
     }
 
+    case "activate": {
+      const nameOrPath = args.positional[0];
+      if (!nameOrPath) {
+        error("Missing required argument: <name|file|github-url>");
+        console.error(
+          `Usage: asm bundle activate <name|file|github-url> -p <tool> -s <global|project>`,
+        );
+        process.exit(2);
+      }
+      if (args.flags.scope !== "global" && args.flags.scope !== "project") {
+        error("asm bundle activate requires --scope global or --scope project.");
+        process.exit(2);
+      }
+
+      const resolved = await resolveBundleInput(nameOrPath, {
+        transport: args.flags.transport,
+      });
+      try {
+        const config = await loadConfig();
+        const { provider } = await resolveProvider(
+          config,
+          args.flags.provider,
+          false,
+        );
+        const targetTemplate =
+          args.flags.scope === "global" ? provider.global : provider.project;
+        const targetDir = resolveProviderPath(targetTemplate);
+        const summary = await activateLibraryBundle(resolved.bundle, {
+          targetDir,
+          provider: provider.name,
+          scope: args.flags.scope,
+          force: args.flags.force,
+          installMissing: args.flags.installMissing,
+          installSkillFromRef: args.flags.installMissing
+            ? (ref) => installBundleRefToLibrary(ref, args.flags.force)
+            : undefined,
+        });
+
+        if (args.flags.json) console.log(JSON.stringify(summary, null, 2));
+        else printLibraryBundleSummary(summary);
+
+        if (summary.failed > 0 || summary.missing > 0) process.exitCode = 1;
+      } finally {
+        await resolved.cleanup();
+      }
+      break;
+    }
+
+    case "deactivate": {
+      const nameOrPath = args.positional[0];
+      if (!nameOrPath) {
+        error("Missing required argument: <name|file|github-url>");
+        console.error(
+          `Usage: asm bundle deactivate <name|file|github-url> -p <tool> -s <global|project>`,
+        );
+        process.exit(2);
+      }
+      if (args.flags.scope !== "global" && args.flags.scope !== "project") {
+        error(
+          "asm bundle deactivate requires --scope global or --scope project.",
+        );
+        process.exit(2);
+      }
+
+      const resolved = await resolveBundleInput(nameOrPath, {
+        transport: args.flags.transport,
+      });
+      try {
+        const config = await loadConfig();
+        const { provider } = await resolveProvider(
+          config,
+          args.flags.provider,
+          false,
+        );
+        const targetTemplate =
+          args.flags.scope === "global" ? provider.global : provider.project;
+        const targetDir = resolveProviderPath(targetTemplate);
+        const summary = await deactivateLibraryBundle(resolved.bundle, {
+          targetDir,
+          provider: provider.name,
+          scope: args.flags.scope,
+          librarySkillsDir: getLibrarySkillsDir(),
+        });
+
+        if (args.flags.json) console.log(JSON.stringify(summary, null, 2));
+        else printLibraryBundleSummary(summary);
+
+        if (summary.failed > 0) process.exitCode = 1;
+      } finally {
+        await resolved.cleanup();
+      }
+      break;
+    }
+
     case "list": {
       const showPredefined = Boolean(args.flags.predefined);
 
