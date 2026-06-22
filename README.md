@@ -729,6 +729,24 @@ Install from a bundle file (custom or shared):
 asm bundle install ./my-bundle.json
 ```
 
+Install a whole bundle into ASM's neutral library:
+
+```bash
+asm bundle install github:user/repo --library
+```
+
+Activate the bundle for one project:
+
+```bash
+asm bundle activate github:user/repo -p codex -s project --install-missing
+```
+
+Deactivate the bundle without deleting the library copies:
+
+```bash
+asm bundle deactivate github:user/repo -p codex -s project
+```
+
 Build a custom bundle from your installed skills, then export it to share:
 
 ```bash
