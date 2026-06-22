@@ -3,6 +3,7 @@ import {
   getConfigPath,
   getDefaultConfig,
   getLibrarySkillsDir,
+  getLibraryLockPath,
   saveConfig,
   resolveProviderPath,
 } from "./config";
@@ -579,7 +580,7 @@ ${ansi.bold("Commands:")}
   publish [path]         Validate, audit, and submit a skill to the registry
   eval <skill-path>      Evaluate a skill against best practices and score it
   eval-providers list    List registered eval providers (id, version, schema, …)
-  bundle                 Manage skill bundles (create, install, list, show, remove)
+  bundle                 Manage skill bundles (create, install, activate, deactivate, list)
   index                  Manage skill index (ingest, search, list)
   doctor                 Run environment health checks and diagnostics
   config show            Print current config
@@ -5312,7 +5313,7 @@ async function cmdBundle(args: ParsedArgs) {
 
   if (!subcommand) {
     error(
-      "Missing subcommand. Use: create, install, list, show, remove, modify, or export",
+      "Missing subcommand. Use: create, install, activate, deactivate, list, show, remove, modify, or export",
     );
     console.error(`Run "asm bundle --help" for usage.`);
     process.exit(2);
@@ -5715,6 +5716,7 @@ async function cmdBundle(args: ParsedArgs) {
           args.flags.scope === "global" ? provider.global : provider.project;
         const targetDir = resolveProviderPath(targetTemplate);
         const summary = await deactivateLibraryBundle(resolved.bundle, {
+          lockPath: getLibraryLockPath(),
           targetDir,
           provider: provider.name,
           scope: args.flags.scope,
