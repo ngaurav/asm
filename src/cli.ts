@@ -5261,7 +5261,7 @@ ${ansi.bold("Subcommands:")}
   deactivate <name|file|github-url>  Deactivate all library skills from a bundle
   list                   List all saved bundles
   list --predefined      List pre-defined bundles shipped with ASM
-  show <name|file>       Show bundle details
+  show <name|file|github-url> Show bundle details
   remove <name>          Remove a saved bundle
   modify <name>          Add/remove skills or update bundle metadata
   export <name> [file]   Export a bundle to a JSON file
